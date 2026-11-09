@@ -49,7 +49,10 @@ export default function TankPage() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
   // 游戏化 UI：商店与水质都收进按需弹出的抽屉，默认不占用画面
-  const [panel, setPanel] = useState<null | 'shop' | 'water' | 'collection'>(null);
+  const [panel, setPanelState] = useState<null | 'shop' | 'water' | 'collection'>(null);
+  // 镜像 panel 状态供渲染循环闭包读取，决定 UI 刷新频率
+  const panelRef = useRef<null | string>(null);
+  const setPanelBoth = (p: null | 'shop' | 'water' | 'collection') => { panelRef.current = p; setPanelState(p); };
   const [shopTab, setShopTab] = useState<'fish' | 'plant' | 'equipment' | 'gift'>('fish');
   // 商店缩略图：由渲染层用真实 glb 模型离屏渲染得到，key 为 specId
   const [shopIcons, setShopIcons] = useState<Record<string, string>>({});
@@ -263,7 +266,9 @@ export default function TankPage() {
         const snap = engine.advance(dt);
         renderer!.update(snap, performance.now());
         uiAccumulator += dt;
-        if (uiAccumulator >= 0.25) {
+        // 面板关闭时放慢 UI 刷新（500ms），面板打开时保持 250ms，减少后台 React 重渲染
+        const uiInterval = panelRef.current ? 0.25 : 0.5;
+        if (uiAccumulator >= uiInterval) {
           uiAccumulator = 0;
           setSnapshot(engine.getSnapshot());
           if (snap.events.length > 0) setEventLog((prev) => [...snap.events, ...prev].slice(0, 8));
@@ -370,11 +375,11 @@ export default function TankPage() {
       {/* 商店抽屉：鱼/水草/装备三个分类，按需打开、看完即收 */}
       {panel === 'shop' && (
         <>
-          <div className="overlay-mask" onClick={() => setPanel(null)} />
+          <div className="overlay-mask" onClick={() => setPanelBoth(null)} />
           <div className="drawer glass">
             <div className="drawer-title">
               <h2>逛一逛</h2>
-              <button className="btn btn-ghost" onClick={() => setPanel(null)}>✕</button>
+              <button className="btn btn-ghost" onClick={() => setPanelBoth(null)}>✕</button>
             </div>
             <div className="tabs">
               <button className={shopTab === 'fish' ? 'tab active' : 'tab'} onClick={() => setShopTab('fish')}>小鱼</button>
@@ -389,7 +394,7 @@ export default function TankPage() {
                   <div className="shelf" key={spec.id}>
                     <div className="shelf-thumb">
                       {shopIcons[spec.id]
-                        ? <img src={shopIcons[spec.id]} alt={spec.name} draggable={false} />
+                        ? <img src={shopIcons[spec.id]} alt={spec.name} draggable={false} decoding="async" />
                         : <span className="shelf-loading">…</span>}
                     </div>
                     <div className="shelf-body">
@@ -414,7 +419,7 @@ export default function TankPage() {
                   <div className="shelf" key={spec.id}>
                     <div className="shelf-thumb">
                       {shopIcons[spec.id]
-                        ? <img src={shopIcons[spec.id]} alt={spec.name} draggable={false} />
+                        ? <img src={shopIcons[spec.id]} alt={spec.name} draggable={false} decoding="async" />
                         : <span className="shelf-loading">…</span>}
                     </div>
                     <div className="shelf-body">
@@ -442,7 +447,7 @@ export default function TankPage() {
                     <div className={`shelf${isInstalled ? ' equipped' : ''}`} key={spec.id}>
                       <div className="shelf-thumb">
                         {shopIcons[spec.id]
-                          ? <img src={shopIcons[spec.id]} alt={spec.name} draggable={false} />
+                          ? <img src={shopIcons[spec.id]} alt={spec.name} draggable={false} decoding="async" />
                           : <span className="shelf-loading">…</span>}
                         {isInstalled && <span className="shelf-badge">使用中</span>}
                       </div>
@@ -483,7 +488,7 @@ export default function TankPage() {
                     return (
                       <div className={`shelf${passActive ? ' equipped' : ''}`} key={p.id}>
                         <div className="shelf-thumb">
-                          <img src={GIFT_ICONS[p.id]} alt={p.name} draggable={false} />
+                          <img src={GIFT_ICONS[p.id]} alt={p.name} draggable={false} decoding="async" />
                           {passActive && <span className="shelf-badge">生效中</span>}
                         </div>
                         <div className="shelf-body">
@@ -516,11 +521,11 @@ export default function TankPage() {
       {/* 水质抽屉：默认只在这里看专业参数，降低常态信息密度 */}
       {panel === 'water' && (
         <>
-          <div className="overlay-mask" onClick={() => setPanel(null)} />
+          <div className="overlay-mask" onClick={() => setPanelBoth(null)} />
           <div className="drawer glass">
             <div className="drawer-title">
               <h2>水质详情</h2>
-              <button className="btn btn-ghost" onClick={() => setPanel(null)}>✕</button>
+              <button className="btn btn-ghost" onClick={() => setPanelBoth(null)}>✕</button>
             </div>
 
             {/* 放置环境：轻量切换，窗台会有持续阳光 */}
@@ -592,11 +597,11 @@ export default function TankPage() {
       {/* 图鉴抽屉：自然发现记录，已发现显示名称、未发现为问号，不做任务清单 */}
       {panel === 'collection' && snapshot && (
         <>
-          <div className="overlay-mask" onClick={() => setPanel(null)} />
+          <div className="overlay-mask" onClick={() => setPanelBoth(null)} />
           <div className="drawer glass">
             <div className="drawer-title">
               <h2>我的图鉴</h2>
-              <button className="btn btn-ghost" onClick={() => setPanel(null)}>✕</button>
+              <button className="btn btn-ghost" onClick={() => setPanelBoth(null)}>✕</button>
             </div>
 
             <h3 className="collection-heading">
@@ -633,7 +638,7 @@ export default function TankPage() {
                   <div key={f.id} className={on ? 'collection-item' : 'collection-item locked'}>
                     <div className="ci-thumb">
                       {on && shopIcons[f.id]
-                        ? <img src={shopIcons[f.id]} alt={f.name} draggable={false} />
+                        ? <img src={shopIcons[f.id]} alt={f.name} draggable={false} decoding="async" />
                         : <span className="ci-q">？</span>}
                     </div>
                     <div className="ci-text">
@@ -656,7 +661,7 @@ export default function TankPage() {
                   <div key={v.id} className={on ? 'collection-item' : 'collection-item locked'}>
                     <div className="ci-thumb" style={on ? { boxShadow: `inset 0 0 0 2px ${hex}` } : undefined}>
                       {on && shopIcons[v.baseSpecId]
-                        ? <img src={shopIcons[v.baseSpecId]} alt={v.name} draggable={false} />
+                        ? <img src={shopIcons[v.baseSpecId]} alt={v.name} draggable={false} decoding="async" />
                         : <span className="ci-q">？</span>}
                     </div>
                     <div className="ci-text">
@@ -678,7 +683,7 @@ export default function TankPage() {
                   <div key={p.id} className={on ? 'collection-item' : 'collection-item locked'}>
                     <div className="ci-thumb">
                       {on && shopIcons[p.id]
-                        ? <img src={shopIcons[p.id]} alt={p.name} draggable={false} />
+                        ? <img src={shopIcons[p.id]} alt={p.name} draggable={false} decoding="async" />
                         : <span className="ci-q">？</span>}
                     </div>
                     <div className="ci-text">
@@ -708,9 +713,9 @@ export default function TankPage() {
             }}
           >{lightOn ? '关灯' : '开灯'}</button>
           <span className="dock-divider" />
-          <button id="guide-shop-btn" className="btn-icon" onClick={() => setPanel('shop')}>商店</button>
-          <button className="btn-icon" onClick={() => setPanel('collection')}>图鉴</button>
-          <button className="btn-icon" onClick={() => setPanel('water')}>水质</button>
+          <button id="guide-shop-btn" className="btn-icon" onClick={() => setPanelBoth('shop')}>商店</button>
+          <button className="btn-icon" onClick={() => setPanelBoth('collection')}>图鉴</button>
+          <button className="btn-icon" onClick={() => setPanelBoth('water')}>水质</button>
           <span className="dock-divider" />
           <button className={isRecording ? 'btn-icon active' : 'btn-icon'} onClick={toggleRecord}>
             {isRecording ? `${recordSeconds}s` : '录制'}

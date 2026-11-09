@@ -18,6 +18,8 @@ PLANT_COLORS = {
     "anubias": {"leaf": (0.13, 0.30, 0.11), "stem": (0.18, 0.26, 0.10)},
     "hornwort": {"leaf": (0.33, 0.57, 0.24), "stem": (0.28, 0.48, 0.20)},
     "moss": {"leaf": (0.27, 0.50, 0.19), "stem": (0.22, 0.42, 0.16)},
+    "rotala": {"leaf": (0.62, 0.22, 0.28), "stem": (0.30, 0.18, 0.16)},
+    "sword": {"leaf": (0.18, 0.38, 0.14), "stem": (0.20, 0.30, 0.12)},
 }
 
 
@@ -148,6 +150,43 @@ BUILDERS = {
     "hornwort": build_hornwort,
     "moss": build_moss,
 }
+
+
+# ---------- 红宫廷：直立细茎 + 对生小叶，叶色偏红 ----------
+def build_rotala(leaf_mat, stem_mat):
+    add_cylinder("rotala_stem", 0.022, 1.05, (0, 0, 0.525), stem_mat)
+    nodes = 14
+    for n in range(nodes):
+        z = 0.06 + n * 0.95 / (nodes - 1)
+        leaf_len = 0.20 * (1 - 0.35 * z)
+        # 对生：每节 2 片对生小叶
+        for k in range(2):
+            verts, faces = make_leaf(leaf_len, 0.055, bend=0.02, seg_l=6, seg_w=3)
+            obj = new_mesh("rotala_n%d_%d" % (n, k), verts, faces, leaf_mat)
+            azimuth = math.pi * k + n * 0.5
+            orient_leaf(obj, azimuth, math.radians(60), z)
+
+
+# ---------- 皇冠草：宽大长叶从基部放射状弯出 ----------
+def build_sword(leaf_mat, stem_mat):
+    add_cylinder("sword_base", 0.08, 0.10, (0, 0, 0.05), stem_mat)
+    base_z = 0.06
+    # 外层 8 片长叶：大角度弯出，形成瀑布状
+    outer = [0.85, 0.78, 0.82, 0.75, 0.80, 0.76, 0.83, 0.77]
+    for k in range(8):
+        verts, faces = make_leaf(outer[k], 0.16, bend=0.25, seg_l=12, seg_w=4)
+        obj = new_mesh("sword_outer_%d" % k, verts, faces, leaf_mat)
+        orient_leaf(obj, 2 * math.pi * k / 8, math.radians(50), base_z)
+    # 内层 5 片：较短直立
+    inner = [0.55, 0.50, 0.52, 0.48, 0.51]
+    for k in range(5):
+        verts, faces = make_leaf(inner[k], 0.13, bend=0.10, seg_l=10, seg_w=3)
+        obj = new_mesh("sword_inner_%d" % k, verts, faces, leaf_mat)
+        orient_leaf(obj, 2 * math.pi * k / 5 + 0.5, math.radians(20), base_z + 0.04)
+
+
+BUILDERS["rotala"] = build_rotala
+BUILDERS["sword"] = build_sword
 
 
 def build_plant(plant_id, out_path):

@@ -27,6 +27,11 @@ export const FISH_CATALOG: FishSpec[] = [
   { id: 'molly', name: '玛丽鱼', price: 14, idealTemp: [22, 28], minSchool: 1, adultWeight: 4, lifespan: 650 * GAME_DAY, matureRatio: 0.12, breedInterval: 3 * GAME_DAY, broodSize: 2 },
   { id: 'cardinal', name: '宝莲灯', price: 15, idealTemp: [23, 27], minSchool: 4, adultWeight: 1.8, lifespan: 550 * GAME_DAY, matureRatio: 0.15, breedInterval: 4 * GAME_DAY, broodSize: 1 },
   { id: 'tiger-barb', name: '虎皮鱼', price: 12, idealTemp: [22, 26], minSchool: 4, adultWeight: 3, lifespan: 550 * GAME_DAY, matureRatio: 0.15, breedInterval: 4 * GAME_DAY, broodSize: 1, incompatibleWith: ['angelfish'] },
+  // 新增鱼种
+  { id: 'goldfish', name: '金鱼', price: 25, idealTemp: [18, 24], minSchool: 2, adultWeight: 6, lifespan: 1200 * GAME_DAY, matureRatio: 0.15, breedInterval: 5 * GAME_DAY, broodSize: 3 },
+  { id: 'betta', name: '斗鱼', price: 30, idealTemp: [24, 30], minSchool: 1, adultWeight: 2, lifespan: 500 * GAME_DAY, matureRatio: 0.18, breedInterval: 4 * GAME_DAY, broodSize: 1, incompatibleWith: ['guppy', 'neon', 'cardinal', 'zebra', 'platy'] },
+  { id: 'platy', name: '月光鱼', price: 10, idealTemp: [22, 28], minSchool: 2, adultWeight: 2, lifespan: 600 * GAME_DAY, matureRatio: 0.12, breedInterval: 3 * GAME_DAY, broodSize: 2 },
+  { id: 'cory', name: '鼠鱼', price: 18, idealTemp: [22, 26], minSchool: 2, adultWeight: 2.5, lifespan: 700 * GAME_DAY, matureRatio: 0.15, breedInterval: 6 * GAME_DAY, broodSize: 1 },
 ];
 
 // 水草目录：生长条件与净化能力真实作用于引擎
@@ -34,6 +39,8 @@ export const PLANT_CATALOG: PlantSpec[] = [
   { id: 'plant-anubias', name: '水榕', price: 25, co2Need: 0.3, lightNeed: 0.4, maxSize: 0.5, no3Uptake: 0.002 },
   { id: 'plant-hornwort', name: '蜈蚣草', price: 15, co2Need: 0.5, lightNeed: 0.6, maxSize: 0.8, no3Uptake: 0.004 },
   { id: 'plant-moss', name: '莫丝', price: 20, co2Need: 0.4, lightNeed: 0.5, maxSize: 0.4, no3Uptake: 0.0015 },
+  { id: 'plant-rotala', name: '红宫廷', price: 30, co2Need: 0.7, lightNeed: 0.8, maxSize: 0.9, no3Uptake: 0.005 },
+  { id: 'plant-sword', name: '皇冠草', price: 35, co2Need: 0.5, lightNeed: 0.6, maxSize: 1.1, no3Uptake: 0.006 },
 ];
 
 export const TANK_CAPACITY_GRAMS = 60; // 缸内生物总重量上限
