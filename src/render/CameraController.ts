@@ -13,7 +13,8 @@ export class CameraController {
   private lastY = 0;
 
   // 方位角不限制、可 360° 环绕；只限制俯仰角，避免翻转或看到房间外
-  private static POLAR_MIN = 0.35;
+  // POLAR_MIN=0.75（约 43° 俯角）：再低会从灯盘上方往下看，被灯盘挡住缸内
+  private static POLAR_MIN = 0.75;
   private static POLAR_MAX = 1.45;
   private static RADIUS_MIN = 5;
   private static RADIUS_MAX = 14;

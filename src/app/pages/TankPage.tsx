@@ -607,8 +607,17 @@ export default function TankPage() {
                 const on = snapshot.achievement.unlocked.includes(a.id);
                 return (
                   <div key={a.id} className={on ? 'collection-item' : 'collection-item locked'}>
-                    <div className="ci-name">{on ? a.name : '？'}</div>
-                    <div className="ci-meta">{on ? a.description : '尚未达成'}</div>
+                    <div className="ci-thumb">
+                      <svg viewBox="0 0 24 24" width="26" height="26"
+                        fill={on ? '#e0a83a' : '#b8c4cc'}
+                        stroke={on ? '#b07f1f' : '#9aa6ae'} strokeWidth="1">
+                        <path d="M7 3h10v3h4v3c0 2.2-1.8 4-4 4h-.42A5 5 0 0 1 13 14.9V17h3v3H8v-3h3v-2.1A5 5 0 0 1 7.42 13H7c-2.2 0-4-1.8-4-4V6h4V3zm0 5H5.5c0 1.1.9 2 2 2V8zm10 0v2c1.1 0 2-.9 2-2H17z"/>
+                      </svg>
+                    </div>
+                    <div className="ci-text">
+                      <div className="ci-name">{on ? a.name : '？'}</div>
+                      <div className="ci-meta">{on ? a.description : '尚未达成'}</div>
+                    </div>
                   </div>
                 );
               })}
@@ -642,10 +651,18 @@ export default function TankPage() {
             <div className="collection-grid">
               {RARE_VARIANT_CATALOG.map((v) => {
                 const on = snapshot.collection.variants.includes(v.id);
+                const hex = '#' + v.color.toString(16).padStart(6, '0');
                 return (
                   <div key={v.id} className={on ? 'collection-item' : 'collection-item locked'}>
-                    <div className="ci-name">{on ? v.name : '？'}</div>
-                    <div className="ci-meta">{on ? '已收藏' : '等待惊喜'}</div>
+                    <div className="ci-thumb" style={on ? { boxShadow: `inset 0 0 0 2px ${hex}` } : undefined}>
+                      {on && shopIcons[v.baseSpecId]
+                        ? <img src={shopIcons[v.baseSpecId]} alt={v.name} draggable={false} />
+                        : <span className="ci-q">？</span>}
+                    </div>
+                    <div className="ci-text">
+                      <div className="ci-name">{on ? v.name : '？'}</div>
+                      <div className="ci-meta">{on ? '已收藏' : '等待惊喜'}</div>
+                    </div>
                   </div>
                 );
               })}

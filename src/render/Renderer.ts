@@ -36,6 +36,8 @@ export class Renderer {
   // 已安装装备的实体（type 之外按 specId 去重）与上次的安装签名
   private equipmentMeshes = new Map<string, THREE.Object3D>();
   private equipmentSignature = '';
+  // CO2 是否已装：决定气泡从细化器（右后侧）成股冒出，而非全缸随机
+  private co2Installed = false;
   // 各水草成熟时的目标视觉高度；幼苗到成熟按 size/maxSize 比例缩放
   // 数值已按缸内水体高度（约 3 单位）上调，让水草成为缸内主要景观而非点缀
   private plantMatureHeight: Record<string, number> = {
@@ -765,6 +767,7 @@ export class Renderer {
       const spec = specById.get(specId);
       if (spec && spec.type !== 'light') wanted.set(specId, spec.type);
     });
+    this.co2Installed = [...wanted.values()].includes('co2');
     for (const [specId, mesh] of this.equipmentMeshes) {
       if (!wanted.has(specId)) {
         this.scene.remove(mesh);
@@ -901,7 +904,11 @@ export class Renderer {
         arr[xIdx] += Math.sin(elapsed * 0.002 + i) * dt * 0.12;
         if (arr[yIdx] > 1.5) {
           arr[yIdx] = -1.6;
-          if (this.motionBounds.kind === 'cylinder') {
+          if (this.co2Installed) {
+            // CO2 细化器：右后侧砂面成股冒泡，小幅抖动模拟细化器气泡
+            arr[xIdx] = this.motionBounds.halfX * 0.55 + (Math.random() - 0.5) * 0.35;
+            arr[xIdx + 2] = -this.motionBounds.halfZ * 0.45 + (Math.random() - 0.5) * 0.3;
+          } else if (this.motionBounds.kind === 'cylinder') {
             const a = Math.random() * Math.PI * 2;
             const r = Math.sqrt(Math.random()) * this.motionBounds.halfX;
             arr[xIdx] = r * Math.cos(a);

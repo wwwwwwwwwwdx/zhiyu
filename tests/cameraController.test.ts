@@ -16,7 +16,7 @@ describe('CameraController', () => {
     const s = controller as unknown as { azimuth: number; polar: number };
     // 方位角不再被夹在 ±0.6，大幅拖拽后明显超出旧限制，证明可环绕
     expect(Math.abs(s.azimuth - before)).toBeGreaterThan(0.6);
-    expect(s.polar).toBeGreaterThanOrEqual(0.35 - 1e-9);
+    expect(s.polar).toBeGreaterThanOrEqual(0.75 - 1e-9);
     expect(s.polar).toBeLessThanOrEqual(1.45 + 1e-9);
   });
 
