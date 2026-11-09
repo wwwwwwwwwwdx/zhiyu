@@ -1,0 +1,364 @@
+/* 知鱼 · 清透海洋设计系统：浅色系、毛玻璃、圆润柔和，让鱼缸成为主角 */
+:root {
+  --ocean-50: #f0f8fb;
+  --ocean-100: #dceff6;
+  --ocean-200: #bfe2ee;
+  --ocean-300: #8fcce0;
+  --ocean-400: #5bb2cf;
+  --ocean-500: #3a9bbd;
+  --ocean-600: #2a7f9e;
+  --ocean-700: #23667f;
+  --ink: #163847;
+  --ink-soft: #52788a;
+  --ink-faint: #84a5b3;
+  --ok: #4cb48b;
+  --warn: #e8a94b;
+  --danger: #e57373;
+  --glass: rgba(255, 255, 255, 0.62);
+  --glass-strong: rgba(255, 255, 255, 0.82);
+  --glass-border: rgba(255, 255, 255, 0.75);
+  --shadow-soft: 0 8px 32px rgba(31, 90, 110, 0.15);
+  --shadow-card: 0 4px 16px rgba(31, 90, 110, 0.1);
+  --radius-lg: 18px;
+  --radius-md: 14px;
+  --radius-sm: 10px;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  color: var(--ink);
+  background: linear-gradient(160deg, var(--ocean-50), var(--ocean-100));
+  -webkit-font-smoothing: antialiased;
+  /* 交互以拖着鱼缸旋转为主，不选中文本，避免拖拽时把界面文字刷蓝 */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+button { font-family: inherit; cursor: pointer; }
+
+/* 毛玻璃容器 */
+.glass {
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  backdrop-filter: blur(18px) saturate(1.4);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-soft);
+}
+
+/* 胶囊 */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 13px;
+}
+
+/* 按钮体系：圆润、柔和、带反馈 */
+.btn {
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 9px 18px;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--glass-strong);
+  border: 1px solid var(--glass-border);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-card); }
+.btn:active { transform: translateY(0) scale(0.97); }
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--ocean-400), var(--ocean-500));
+  color: #fff;
+  border: none;
+}
+.btn-primary:hover { background: linear-gradient(135deg, var(--ocean-500), var(--ocean-600)); }
+
+.btn-ghost {
+  background: transparent;
+  border: none;
+  color: var(--ink-soft);
+}
+.btn-ghost:hover { background: rgba(255, 255, 255, 0.5); color: var(--ink); }
+
+.btn-icon {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 64px;
+  height: 60px;
+  border-radius: var(--radius-md);
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: none;
+  transition: background 0.15s ease, transform 0.15s ease, color 0.15s ease;
+}
+.btn-icon .ico { font-size: 20px; line-height: 1; }
+.btn-icon:hover { background: rgba(255, 255, 255, 0.6); color: var(--ink); transform: translateY(-2px); }
+.btn-icon.active { color: var(--ocean-600); background: rgba(91, 178, 207, 0.18); }
+
+/* 底部浮动操作坞 */
+.dock {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  border-radius: 22px;
+  z-index: 5;
+  animation: slide-up 0.4s ease both;
+}
+.dock-divider { width: 1px; height: 34px; background: rgba(84, 120, 138, 0.25); margin: 0 4px; }
+
+/* 抽屉式浮层 */
+.overlay-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(22, 56, 71, 0.22);
+  z-index: 6;
+  animation: fade-in 0.25s ease both;
+}
+.drawer {
+  position: absolute;
+  right: 18px;
+  top: 18px;
+  bottom: 110px;
+  width: 360px;
+  max-width: calc(100% - 36px);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  overflow-y: auto;
+  z-index: 7;
+  animation: slide-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.drawer-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.drawer-title h2 { margin: 0; font-size: 17px; }
+
+/* 分类标签 */
+.tabs { display: flex; gap: 6px; margin-bottom: 16px; background: rgba(255,255,255,0.5); padding: 4px; border-radius: 999px; }
+.tab {
+  flex: 1;
+  border: none;
+  background: transparent;
+  padding: 8px 0;
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--ink-soft);
+  transition: all 0.18s ease;
+}
+.tab.active { background: #fff; color: var(--ocean-600); box-shadow: var(--shadow-card); }
+
+/* 商店货架：两列网格，每件商品带真实模型缩略图，先看清再决定买 */
+.shop-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.shelf {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  overflow: hidden;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.shelf:hover { transform: translateY(-2px); box-shadow: var(--shadow-card); }
+.shelf.equipped { border-color: rgba(91, 178, 207, 0.5); background: rgba(233, 246, 252, 0.72); }
+
+/* 缩略图区：浅色环形渐变做展示台氛围，模型图标本身已是浅底 PNG */
+.shelf-thumb {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 50% 64%, #ffffff 0%, #eef6fb 58%, #e2eef6 100%);
+}
+.shelf-thumb img { width: 100%; height: 100%; object-fit: contain; }
+.shelf-loading { font-size: 18px; color: var(--ink-faint); }
+.shelf-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: #fff;
+  background: var(--ocean-600);
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+.shelf-body { display: flex; flex-direction: column; gap: 2px; flex: 1; padding: 8px 10px 10px; }
+.shelf-body .name { font-size: 13px; font-weight: 600; }
+.shelf-body .meta { font-size: 11px; color: var(--ink-faint); line-height: 1.35; }
+.shelf-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 8px;
+}
+.shelf .price { font-size: 12px; color: var(--ocean-600); font-weight: 600; }
+.shelf .in-use { font-size: 11px; color: var(--ok); }
+.btn-sm { padding: 5px 11px; font-size: 11.5px; border-radius: 999px; }
+
+/* 图鉴：自然发现网格，未发现项弱化，不制造任务感 */
+.collection-heading {
+  font-size: 13px; font-weight: 600; color: var(--ink-soft);
+  margin: 16px 0 8px;
+}
+.collection-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+}
+.collection-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: var(--radius-md);
+  padding: 9px 11px;
+}
+/* 图鉴缩略图：已发现用真实模型图，未发现留空位问号，保持卡片尺寸稳定 */
+.ci-thumb {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: radial-gradient(circle at 50% 62%, #ffffff 0%, #eef6fb 70%, #e2eef6 100%);
+  overflow: hidden;
+}
+.ci-thumb img { width: 100%; height: 100%; object-fit: contain; }
+.ci-q { font-size: 15px; color: var(--ink-faint); }
+.ci-text { min-width: 0; }
+.collection-item .ci-name { font-size: 13px; font-weight: 600; color: var(--ink); }
+.collection-item .ci-meta { font-size: 11px; color: var(--ink-faint); margin-top: 3px; }
+.collection-item.locked { background: rgba(255, 255, 255, 0.28); border-style: dashed; }
+.collection-item.locked .ci-name { color: var(--ink-faint); font-weight: 500; }
+
+/* 月卡生效状态条 */
+.pass-status {
+  font-size: 12.5px; color: var(--ok);
+  background: rgba(76, 180, 139, 0.12);
+  border-radius: var(--radius-md);
+  padding: 9px 12px; margin-bottom: 10px;
+}
+
+/* 水质详情行 */
+.water-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 4px;
+  border-bottom: 1px solid rgba(84, 120, 138, 0.14);
+  font-size: 13px;
+}
+.water-row:last-child { border-bottom: none; }
+.water-row .label { display: flex; align-items: center; gap: 9px; color: var(--ink-soft); }
+.water-row .value { font-weight: 600; }
+
+/* 状态点 */
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.dot.ok { background: var(--ok); }
+.dot.warn { background: var(--warn); }
+.dot.danger { background: var(--danger); }
+
+/* 顶部返回与金币 */
+.top-back {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  z-index: 4;
+  text-decoration: none;
+}
+.coin-pill {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  z-index: 4;
+  font-weight: 600;
+  color: var(--ocean-700);
+}
+
+/* 柔和提示 toast */
+.toast {
+  position: absolute;
+  top: 70px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  padding: 10px 18px;
+  border-radius: 999px;
+  font-size: 13px;
+  animation: pop 0.28s ease both;
+}
+.toast.notice { color: #8a4b4b; background: rgba(255, 226, 226, 0.9); }
+.toast.info { color: var(--ocean-700); background: var(--glass-strong); }
+
+/* 事件轻时间线 */
+.event-list { list-style: none; margin: 0; padding: 0; }
+.event-list li {
+  font-size: 12.5px;
+  padding: 7px 10px;
+  margin-bottom: 6px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ink-soft);
+}
+.event-list li.alert { color: #b05a5a; background: rgba(255, 226, 226, 0.7); }
+.event-list li.hint { color: #9a7a3a; background: rgba(255, 243, 214, 0.7); }
+
+/* 离线回归卡片 */
+.offline-card {
+  position: absolute;
+  top: 64px;
+  right: 18px;
+  width: 300px;
+  z-index: 5;
+  padding: 16px;
+  border-radius: var(--radius-lg);
+  animation: pop 0.32s ease both;
+}
+.offline-card h3 { margin: 0 0 10px; font-size: 14px; }
+.offline-card ul { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--ink-soft); }
+.offline-card li { margin-bottom: 5px; }
+
+/* 全屏退出按钮 */
+.exit-fs {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 9;
+}
+
+/* 小工具行（录制/画质/开发验证） */
+.tools-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.quality-mini { display: flex; gap: 4px; align-items: center; font-size: 11.5px; color: var(--ink-faint); }
+.quality-mini button { border: none; background: rgba(255,255,255,0.5); border-radius: 999px; padding: 3px 10px; font-size: 11px; color: var(--ink-soft); }
+.quality-mini button.on { background: var(--ocean-500); color: #fff; }
+
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slide-up { from { opacity: 0; transform: translate(-50%, 16px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes slide-in { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes pop { 0% { opacity: 0; transform: translateX(-50%) scale(0.92); } 100% { opacity: 1; transform: translateX(-50%) scale(1); } }
+@keyframes floaty { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
