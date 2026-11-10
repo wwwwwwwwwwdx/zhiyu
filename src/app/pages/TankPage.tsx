@@ -5,6 +5,7 @@ import { EQUIPMENT_CATALOG, FISH_CATALOG, PLANT_CATALOG } from '../../engine/bal
 import { ENVIRONMENT_CATALOG, DEFAULT_ENVIRONMENT } from '../../engine/balance/environments';
 import { TANK_SHAPE_CATALOG, DEFAULT_TANK_SHAPE } from '../../engine/balance/tankShapes';
 import { RARE_VARIANT_CATALOG } from '../../engine/biology/variants';
+import { fishTier, plantTier, CARD_TIERS, LIMITED_CARDS } from '../../engine/balance/cardTiers';
 import { ACHIEVEMENT_CATALOG } from '../../engine/progression/achievements';
 import { PAID_PRODUCT_CATALOG } from '../../engine/balance/paidShop';
 import { MockPaymentGateway } from '../../payment/MockPaymentGateway';
@@ -54,6 +55,8 @@ export default function TankPage() {
   const panelRef = useRef<null | string>(null);
   const setPanelBoth = (p: null | 'shop' | 'water' | 'collection') => { panelRef.current = p; setPanelState(p); };
   const [shopTab, setShopTab] = useState<'fish' | 'plant' | 'equipment' | 'gift'>('fish');
+  // 限定卡全屏动效
+  const [cardReveal, setCardReveal] = useState<{ name: string; icon: string; label: string } | null>(null);
   // 商店缩略图：由渲染层用真实 glb 模型离屏渲染得到，key 为 specId
   const [shopIcons, setShopIcons] = useState<Record<string, string>>({});
   const [environmentId, setEnvironmentId] = useState<string>(DEFAULT_ENVIRONMENT);
@@ -634,8 +637,19 @@ export default function TankPage() {
             <div className="collection-grid">
               {FISH_CATALOG.map((f) => {
                 const on = snapshot.collection.fish.includes(f.id);
+                const tier = on ? fishTier(f.id) : null;
+                const meta = tier ? CARD_TIERS[tier] : null;
                 return (
-                  <div key={f.id} className={on ? 'collection-item' : 'collection-item locked'}>
+                  <div key={f.id}
+                    className={on ? `collection-item tipped tier-${tier}` : 'collection-item locked'}
+                    onClick={() => {
+                      if (on && LIMITED_CARDS.has(f.id) && shopIcons[f.id]) {
+                        setCardReveal({ name: f.name, icon: shopIcons[f.id], label: '限定卡 · ' + f.name });
+                      }
+                    }}
+                    style={on && tier === 'common' ? { borderColor: meta!.border } : undefined}
+                  >
+                    {on && meta && meta.badge && <span className="ci-badge" style={{ background: meta.badgeColor }}>{meta.badge}</span>}
                     <div className="ci-thumb">
                       {on && shopIcons[f.id]
                         ? <img src={shopIcons[f.id]} alt={f.name} draggable={false} decoding="async" />
@@ -656,10 +670,17 @@ export default function TankPage() {
             <div className="collection-grid">
               {RARE_VARIANT_CATALOG.map((v) => {
                 const on = snapshot.collection.variants.includes(v.id);
-                const hex = '#' + v.color.toString(16).padStart(6, '0');
                 return (
-                  <div key={v.id} className={on ? 'collection-item' : 'collection-item locked'}>
-                    <div className="ci-thumb" style={on ? { boxShadow: `inset 0 0 0 2px ${hex}` } : undefined}>
+                  <div key={v.id}
+                    className={on ? 'collection-item tipped tier-rainbow' : 'collection-item locked'}
+                    onClick={() => {
+                      if (on && LIMITED_CARDS.has(v.id) && shopIcons[v.baseSpecId]) {
+                        setCardReveal({ name: v.name, icon: shopIcons[v.baseSpecId], label: '限定卡 · ' + v.name });
+                      }
+                    }}
+                  >
+                    {on && <span className="ci-badge" style={{ background: '#c860e0' }}>彩</span>}
+                    <div className="ci-thumb">
                       {on && shopIcons[v.baseSpecId]
                         ? <img src={shopIcons[v.baseSpecId]} alt={v.name} draggable={false} decoding="async" />
                         : <span className="ci-q">？</span>}
@@ -679,8 +700,14 @@ export default function TankPage() {
             <div className="collection-grid">
               {PLANT_CATALOG.map((p) => {
                 const on = snapshot.collection.plants.includes(p.id);
+                const tier = on ? plantTier(p.id) : null;
+                const meta = tier ? CARD_TIERS[tier] : null;
                 return (
-                  <div key={p.id} className={on ? 'collection-item' : 'collection-item locked'}>
+                  <div key={p.id}
+                    className={on ? `collection-item tipped tier-${tier}` : 'collection-item locked'}
+                    style={on && tier === 'common' ? { borderColor: meta!.border } : undefined}
+                  >
+                    {on && meta && meta.badge && <span className="ci-badge" style={{ background: meta.badgeColor }}>{meta.badge}</span>}
                     <div className="ci-thumb">
                       {on && shopIcons[p.id]
                         ? <img src={shopIcons[p.id]} alt={p.name} draggable={false} decoding="async" />
@@ -725,6 +752,17 @@ export default function TankPage() {
       )}
       {isFullscreen && (
         <button className="exit-fs btn glass" onClick={toggleFullscreen}>退出全屏（Esc）</button>
+      )}
+
+      {/* 限定卡全屏动效 */}
+      {cardReveal && (
+        <div className="card-reveal-overlay" onClick={() => setCardReveal(null)}>
+          <div className="card-reveal-stage">
+            <img src={cardReveal.icon} alt={cardReveal.name} />
+            <div className="card-reveal-label">{cardReveal.label}</div>
+            <div className="card-reveal-hint">点击任意处关闭</div>
+          </div>
+        </div>
       )}
     </div>
   );
