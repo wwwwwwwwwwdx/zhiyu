@@ -47,13 +47,14 @@ export class Renderer {
     'plant-rotala': 1.8,
     'plant-sword': 1.15,
   };
-  // 各水草摆动特性：振幅（弧度）、频率（Hz）——细茎软叶摆得大而快，硬阔叶/苔藓摆得小而慢
+  // 各水草摆动特性：振幅（弧度）、频率（Hz）——水下水流缓慢，植物只微微摇曳
+  // 细茎软叶摆幅稍大但仍很慢，硬阔叶/苔藓几乎不动
   private plantSway: Record<string, { amp: number; freq: number }> = {
-    'plant-anubias': { amp: 0.018, freq: 0.5 },
-    'plant-hornwort': { amp: 0.075, freq: 1.1 },
-    'plant-moss': { amp: 0.008, freq: 0.3 },
-    'plant-rotala': { amp: 0.055, freq: 1.6 },
-    'plant-sword': { amp: 0.022, freq: 0.6 },
+    'plant-anubias': { amp: 0.006, freq: 0.07 },
+    'plant-hornwort': { amp: 0.035, freq: 0.12 },
+    'plant-moss': { amp: 0.003, freq: 0.05 },
+    'plant-rotala': { amp: 0.028, freq: 0.15 },
+    'plant-sword': { amp: 0.010, freq: 0.08 },
   };
   private lastSnapshot: Snapshot | null = null;
   private monitor = new PerformanceMonitor();
@@ -920,12 +921,15 @@ export class Renderer {
       const growRatio = spec ? p.size / spec.maxSize : p.size;
       const visualRatio = 0.66 + 0.34 * Math.max(0, Math.min(1, (growRatio - 0.2) / 0.8));
       mesh.scale.setScalar(visualRatio * matureHeight);
-      // 水流摆动：不同水草振幅/频率不同，绕底座轻微摇曳，相位错开避免整齐划一
-      const sway = this.plantSway[p.specId] ?? { amp: 0.02, freq: 0.8 };
+      // 水流摆动：两层正弦叠加，模拟水流的缓流+细浪，避免单一正弦的机械感
+      const sway = this.plantSway[p.specId] ?? { amp: 0.01, freq: 0.1 };
       const phase = p.id.charCodeAt(p.id.length - 1) * 0.7;
       const t = elapsed / 1000;
-      mesh.rotation.z = Math.sin(t * sway.freq * Math.PI * 2 + phase) * sway.amp;
-      mesh.rotation.x = Math.cos(t * sway.freq * Math.PI * 1.3 + phase) * sway.amp * 0.6;
+      // 主摆动：慢而柔和；次摆动：频率略高、振幅更小，像细流扰动
+      const primary = Math.sin(t * sway.freq * 2 * Math.PI + phase);
+      const secondary = Math.sin(t * sway.freq * 2 * 1.7 * Math.PI + phase * 1.3) * 0.35;
+      mesh.rotation.z = (primary + secondary) * sway.amp;
+      mesh.rotation.x = Math.cos(t * sway.freq * 2 * 0.7 * Math.PI + phase) * sway.amp * 0.5;
     });
 
     // 气泡匀速上升、轻微左右飘，到水面后从底部重新升起
