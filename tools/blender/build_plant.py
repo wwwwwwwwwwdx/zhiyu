@@ -167,22 +167,22 @@ def build_rotala(leaf_mat, stem_mat):
             orient_leaf(obj, azimuth, math.radians(60), z)
 
 
-# ---------- 皇冠草：宽大长叶从基部放射状弯出 ----------
+# ---------- 皇冠草：窄长叶从基部放射状弯出，避免"卷心菜"感 ----------
 def build_sword(leaf_mat, stem_mat):
-    add_cylinder("sword_base", 0.08, 0.10, (0, 0, 0.05), stem_mat)
-    base_z = 0.06
-    # 外层 8 片长叶：大角度弯出，形成瀑布状
-    outer = [0.85, 0.78, 0.82, 0.75, 0.80, 0.76, 0.83, 0.77]
-    for k in range(8):
-        verts, faces = make_leaf(outer[k], 0.16, bend=0.25, seg_l=12, seg_w=4)
+    add_cylinder("sword_base", 0.06, 0.08, (0, 0, 0.04), stem_mat)
+    base_z = 0.05
+    # 外层 6 片窄长叶：中等角度弯出，叶窄而长
+    outer = [0.72, 0.66, 0.70, 0.64, 0.68, 0.65]
+    for k in range(6):
+        verts, faces = make_leaf(outer[k], 0.09, bend=0.18, seg_l=12, seg_w=3)
         obj = new_mesh("sword_outer_%d" % k, verts, faces, leaf_mat)
-        orient_leaf(obj, 2 * math.pi * k / 8, math.radians(50), base_z)
-    # 内层 5 片：较短直立
-    inner = [0.55, 0.50, 0.52, 0.48, 0.51]
-    for k in range(5):
-        verts, faces = make_leaf(inner[k], 0.13, bend=0.10, seg_l=10, seg_w=3)
+        orient_leaf(obj, 2 * math.pi * k / 6, math.radians(38), base_z)
+    # 内层 4 片：短而直立
+    inner = [0.45, 0.42, 0.44, 0.40]
+    for k in range(4):
+        verts, faces = make_leaf(inner[k], 0.07, bend=0.06, seg_l=9, seg_w=3)
         obj = new_mesh("sword_inner_%d" % k, verts, faces, leaf_mat)
-        orient_leaf(obj, 2 * math.pi * k / 5 + 0.5, math.radians(20), base_z + 0.04)
+        orient_leaf(obj, 2 * math.pi * k / 4 + 0.4, math.radians(12), base_z + 0.03)
 
 
 BUILDERS["rotala"] = build_rotala

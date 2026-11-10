@@ -39,11 +39,21 @@ export class Renderer {
   // CO2 是否已装：决定气泡从细化器（右后侧）成股冒出，而非全缸随机
   private co2Installed = false;
   // 各水草成熟时的目标视觉高度；幼苗到成熟按 size/maxSize 比例缩放
-  // 数值已按缸内水体高度（约 3 单位）上调，让水草成为缸内主要景观而非点缀
+  // 按真实水族比例：水榕低矮阔叶、蜈蚣草高、莫丝贴地、红宫廷中等高、皇冠草中等莲座
   private plantMatureHeight: Record<string, number> = {
-    'plant-anubias': 1.6,
-    'plant-hornwort': 2.6,
-    'plant-moss': 1.05,
+    'plant-anubias': 0.75,
+    'plant-hornwort': 2.2,
+    'plant-moss': 0.45,
+    'plant-rotala': 1.8,
+    'plant-sword': 1.15,
+  };
+  // 各水草摆动特性：振幅（弧度）、频率（Hz）——细茎软叶摆得大而快，硬阔叶/苔藓摆得小而慢
+  private plantSway: Record<string, { amp: number; freq: number }> = {
+    'plant-anubias': { amp: 0.018, freq: 0.5 },
+    'plant-hornwort': { amp: 0.075, freq: 1.1 },
+    'plant-moss': { amp: 0.008, freq: 0.3 },
+    'plant-rotala': { amp: 0.055, freq: 1.6 },
+    'plant-sword': { amp: 0.022, freq: 0.6 },
   };
   private lastSnapshot: Snapshot | null = null;
   private monitor = new PerformanceMonitor();
@@ -261,6 +271,19 @@ export class Renderer {
     if (this.lampGlowMat) {
       this.lampGlowMat.emissiveIntensity = on ? 1.2 : 0.04;
       this.lampGlowMat.color.setHex(on ? 0xeaf6fb : 0x5a6b75);
+    }
+    // 光照后植物呈现差异化：红宫廷(高草)开灯时叶色更红艳，关灯时黯淡偏绿；
+    // 低光植物(水榕/莫丝/皇冠)变化小，仅整体略亮
+    for (const mesh of this.plantMeshes.values()) {
+      const specId = mesh.userData.specId ?? '';
+      mesh.traverse((child) => {
+        const m = (child as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+        if (!m || !m.emissive) return;
+        if (specId === 'plant-rotala') {
+          m.emissive.setHex(on ? 0x661111 : 0x000000);
+          m.emissiveIntensity = on ? 0.35 : 0;
+        }
+      });
     }
   }
 
@@ -581,7 +604,11 @@ export class Renderer {
   // glb 与占位的几何原点都在底部，使缩放（生长）时从砂面向上长
   private createPlantMesh(specId: string, fallbackIndex: number): THREE.Object3D {
     const template = this.plantTemplates.get(specId);
-    if (template) return template.clone(true);
+    if (template) {
+      const cloned = template.clone(true);
+      cloned.userData.specId = specId;
+      return cloned;
+    }
     const geometry = new THREE.ConeGeometry(0.12, 0.8, 6);
     geometry.translate(0, 0.4, 0);
     return new THREE.Mesh(
@@ -610,6 +637,8 @@ export class Renderer {
         mesh.position.set(pos.x, -1.55, pos.z);
         this.scene.add(mesh);
         this.plantMeshes.set(plant.id, mesh);
+        // 新植株加入后重发光照状态，使其获得对应物种的光照表现
+        this.currentLightOn = null;
       }
     });
   }
@@ -891,6 +920,12 @@ export class Renderer {
       const growRatio = spec ? p.size / spec.maxSize : p.size;
       const visualRatio = 0.66 + 0.34 * Math.max(0, Math.min(1, (growRatio - 0.2) / 0.8));
       mesh.scale.setScalar(visualRatio * matureHeight);
+      // 水流摆动：不同水草振幅/频率不同，绕底座轻微摇曳，相位错开避免整齐划一
+      const sway = this.plantSway[p.specId] ?? { amp: 0.02, freq: 0.8 };
+      const phase = p.id.charCodeAt(p.id.length - 1) * 0.7;
+      const t = elapsed / 1000;
+      mesh.rotation.z = Math.sin(t * sway.freq * Math.PI * 2 + phase) * sway.amp;
+      mesh.rotation.x = Math.cos(t * sway.freq * Math.PI * 1.3 + phase) * sway.amp * 0.6;
     });
 
     // 气泡匀速上升、轻微左右飘，到水面后从底部重新升起
