@@ -189,7 +189,7 @@ def new_mesh(name, verts, faces, mat, smooth=True):
     return obj
 
 
-def build_body(stations, ring_segments=14):
+def build_body(stations, ring_segments=24):
     # Blender 约定：Z 为背腹（垂直）、Y 为左右；导出后 Blender Z→glTF Y、Blender Y→glTF Z
     verts = []
     faces = []
@@ -258,7 +258,11 @@ def build_fish(fish_id, out_path):
     eye_mat = make_material("%s_eye_mat" % fish_id, (0.02, 0.02, 0.02), metallic=0.0, roughness=0.12)
 
     bv, bf = build_body(params["body"])
-    new_mesh("%s_body" % fish_id, bv, bf, body_mat)
+    body_obj = new_mesh("%s_body" % fish_id, bv, bf, body_mat)
+    # 细分曲面：把低模椭圆环平滑成有机鱼体，去掉棱角感
+    subsurf = body_obj.modifiers.new("subsurf", "SUBSURF")
+    subsurf.levels = 2
+    subsurf.render_levels = 2
     tv, tf = build_symmetric_fin(params["tail"])
     new_mesh("%s_tail" % fish_id, tv, tf, tail_mat)
     dv, df = build_ranged_fin(params["dorsal"])
