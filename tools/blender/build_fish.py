@@ -256,6 +256,7 @@ def build_fish(fish_id, out_path):
     tail_mat = make_material("%s_tail_mat" % fish_id, colors["tail"], metallic=0.02, roughness=0.5)
     fin_mat = make_material("%s_fin_mat" % fish_id, colors["fin"], metallic=0.02, roughness=0.55)
     eye_mat = make_material("%s_eye_mat" % fish_id, (0.02, 0.02, 0.02), metallic=0.0, roughness=0.12)
+    eye_white_mat = make_material("%s_eyew_mat" % fish_id, (0.92, 0.92, 0.88), metallic=0.0, roughness=0.35)
 
     bv, bf = build_body(params["body"])
     body_obj = new_mesh("%s_body" % fish_id, bv, bf, body_mat)
@@ -278,12 +279,18 @@ def build_fish(fish_id, out_path):
         pobj.rotation_euler = (0, math.radians(s * 35), 0)
 
     for side, s in (("L", 1), ("R", -1)):
-        # 眼睛在头部左右（Blender Y），背侧（Blender Z 正，不随 side 变号）
-        bpy.ops.mesh.primitive_uv_sphere_add(segments=12, ring_count=8, radius=0.022,
+        # 白眼球
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=16, ring_count=10, radius=0.024,
                                              location=(0.135, s * 0.052, 0.030))
-        eye = bpy.context.active_object
-        eye.name = "%s_eye_%s" % (fish_id, side)
-        assign(eye, eye_mat)
+        eyeball = bpy.context.active_object
+        eyeball.name = "%s_eyew_%s" % (fish_id, side)
+        assign(eyeball, eye_white_mat)
+        # 黑瞳孔（略靠前、偏外）
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=12, ring_count=8, radius=0.013,
+                                             location=(0.148, s * 0.066, 0.032))
+        pupil = bpy.context.active_object
+        pupil.name = "%s_eye_%s" % (fish_id, side)
+        assign(pupil, eye_mat)
 
     mesh_objs = [o for o in bpy.data.objects if o.type == "MESH"]
     import mathutils
