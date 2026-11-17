@@ -26,13 +26,24 @@ describe('CameraController', () => {
     const controller = new CameraController(camera);
     for (let i = 0; i < 50; i++) controller.drag(200, 0);
     const dragged = (controller as unknown as { azimuth: number }).azimuth;
-    controller.update(100000);
+    controller.update(0);
     // update 后相机方位角应保持拖拽结果，而非回到初始
     const after = new THREE.Spherical().setFromVector3(camera.position);
     // Spherical.theta 归一化到 (-π, π]，与累积的 azimuth 相差整数个 2π，按圆周角差比较
     const twoPi = Math.PI * 2;
     const diff = Math.abs((((dragged - after.theta) % twoPi) + twoPi) % twoPi);
     expect(Math.min(diff, twoPi - diff)).toBeLessThan(1e-5);
+  });
+
+  it('呼吸微动幅度很小，不产生明显位移', () => {
+    const camera = new THREE.PerspectiveCamera(50, 1.5, 0.1, 100);
+    camera.position.set(0, 2.8, 10);
+    const controller = new CameraController(camera);
+    const p0 = camera.position.clone();
+    controller.update(100000);
+    const p1 = camera.position;
+    expect(Math.abs(p1.x - p0.x)).toBeLessThan(0.1);
+    expect(Math.abs(p1.y - p0.y)).toBeLessThan(0.1);
   });
 
   it('反复滚轮缩放，半径被限制在最小与最大值之间', () => {

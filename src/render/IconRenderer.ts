@@ -1,5 +1,8 @@
-// 离屏图标渲染器：把已加载的 glb 模型用固定灯光与浅色背景渲染成正方形 dataURL，
+// 离屏图标渲染器：把已加载的 glb 模型用固定灯光渲染成正方形 dataURL，
 // 作为商店/图鉴的商品缩略图，保证"所见即所得"。独立 WebGLRenderer，不干扰主场景。
+//
+// 背景留透明：缩略图要贴在会换肤的展示台上（.shelf-thumb / .ci-thumb 自带渐变），
+// 以前烤死一层浅蓝底，换到暗色皮时那些白方块就成了补丁。
 import * as THREE from 'three';
 
 export class IconRenderer {
@@ -8,13 +11,14 @@ export class IconRenderer {
   private camera: THREE.PerspectiveCamera;
 
   constructor(size = 256) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: true });
     this.renderer.setSize(size, size);
     this.renderer.setPixelRatio(1);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.setClearAlpha(0);
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0xf3f8fb);
+    this.scene.background = null;
 
     // 三点布光：环境光打底，主光塑形，冷色补光消除死黑
     const ambient = new THREE.AmbientLight(0xffffff, 0.9);

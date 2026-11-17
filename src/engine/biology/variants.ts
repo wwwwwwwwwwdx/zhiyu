@@ -32,6 +32,11 @@ export const RARE_VARIANT_CATALOG: RareVariant[] = [
   { id: 'cardinal-albino', baseSpecId: 'cardinal', name: '白化宝莲灯', color: 0xfffde7, mutationRate: 0.03, inheritRate: 0.55 },
   // 虎皮鱼
   { id: 'tiger-barb-green', baseSpecId: 'tiger-barb', name: '绿虎皮鱼', color: 0x6b8e7a, mutationRate: 0.03, inheritRate: 0.55 },
+  // 后加鱼种：与鱼类目录保持一一覆盖
+  { id: 'goldfish-calico', baseSpecId: 'goldfish', name: '五花金鱼', color: 0xe8753f, mutationRate: 0.03, inheritRate: 0.55 },
+  { id: 'betta-crowntail', baseSpecId: 'betta', name: '狮王斗鱼', color: 0x3f6fc4, mutationRate: 0.02, inheritRate: 0.5 },
+  { id: 'platy-tuxedo', baseSpecId: 'platy', name: '礼服月光鱼', color: 0x2f3b45, mutationRate: 0.03, inheritRate: 0.55 },
+  { id: 'cory-albino', baseSpecId: 'cory', name: '白化鼠鱼', color: 0xf2e2c4, mutationRate: 0.03, inheritRate: 0.55 },
 ];
 
 export function getRareVariants(baseSpecId: string): RareVariant[] {

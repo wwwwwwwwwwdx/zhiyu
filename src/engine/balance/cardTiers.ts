@@ -58,9 +58,10 @@ export function variantTier(_variantId: string): CardTier {
   return 'rainbow';
 }
 
-// 成就分级：普通成就=金，特殊里程碑=限定
+// 成就分级：普通成就=金，长线里程碑=限定
 const ACHIEVEMENT_TIER: Record<string, CardTier> = {
-  // 养鱼数里程碑最高级设为限定
+  'long-companion': 'limited',
+  collector: 'limited',
 };
 
 export function fishTier(specId: string): CardTier {
@@ -75,7 +76,10 @@ export function achievementTier(achId: string): CardTier {
   return ACHIEVEMENT_TIER[achId] ?? 'gold';
 }
 
-// 哪些是限定卡（点击触发全屏动效）
+// 点击触发全屏动效的白名单：当前为最高级卡（钻石级鱼与稀有品系）
 export const LIMITED_CARDS = new Set<string>([
-  // 留空，后续配置限定卡 id；目前七彩品系已有足够辨识度
+  'betta',
+  'angelfish',
+  'guppy-albino',
+  'angelfish-gold',
 ]);

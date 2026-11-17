@@ -2,7 +2,11 @@
 // 判定全部基于当前可观测状态与图鉴（图鉴只增不减），不依赖瞬时事件，可独立单测。
 
 import { GAME_DAY } from '../balance/constants';
+import { FISH_CATALOG } from '../balance/catalog';
 import type { CollectionState } from '../core/types';
+
+// 以目录为单一来源，新增鱼种时成就文案与阈值自动跟随
+const FISH_SPECIES_COUNT = FISH_CATALOG.length;
 
 export interface AchievementDef {
   id: string;
@@ -18,7 +22,7 @@ export const ACHIEVEMENT_CATALOG: AchievementDef[] = [
   { id: 'school', name: '成群结队', description: '同时拥有 6 条鱼', rewardCoins: 50 },
   { id: 'rare-fish', name: '意外之喜', description: '获得一条稀有品系', rewardCoins: 50 },
   { id: 'long-companion', name: '长久陪伴', description: '陪伴走过 30 个游戏日', rewardCoins: 100 },
-  { id: 'collector', name: '博物君子', description: '集齐全部 8 种基础鱼', rewardCoins: 100 },
+  { id: 'collector', name: '博物君子', description: `集齐全部 ${FISH_SPECIES_COUNT} 种基础鱼`, rewardCoins: 100 },
   { id: 'wealthy', name: '小有积蓄', description: '拥有 1000 金币', rewardCoins: 50 },
 ];
 
@@ -39,7 +43,7 @@ function conditions(ctx: AchievementContext): Record<string, boolean> {
     school: ctx.fishCount >= 6,
     'rare-fish': ctx.collection.variants.length >= 1,
     'long-companion': ctx.gameTime >= 30 * GAME_DAY,
-    collector: ctx.collection.fish.length >= 8,
+    collector: ctx.collection.fish.length >= FISH_SPECIES_COUNT,
     wealthy: ctx.coins >= 1000,
   };
 }

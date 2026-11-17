@@ -149,14 +149,65 @@ FISH_PARAMS = {
         "dorsal": [(0.05, 0.075, 0.105), (-0.01, 0.070, 0.095), (-0.07, 0.045, 0.065)],
         "anal": [(-0.02, -0.065, -0.080), (-0.07, -0.048, -0.070), (-0.11, -0.025, -0.045)],
         "colors": {"body": (0.45, 0.40, 0.35), "tail": (0.50, 0.45, 0.40), "fin": (0.48, 0.43, 0.38)},
+        "tex": {"pattern": "speckle", "color": (0.28, 0.24, 0.20), "density": 0.35},
     },
+}
+
+# 纹理图案补充配置：按鱼种覆盖/追加（与 FISH_PARAMS 内联 tex 等价，集中放这里便于调）
+TEX_OVERRIDES = {
+    "guppy": {"pattern": "gradient", "to": (0.35, 0.30, 0.24)},
+    "neon": {
+        "pattern": "hband",
+        "lines": [0.0, 0.5],
+        "width": 0.06,
+        "color": (0.25, 0.85, 0.95),
+        "belly": {"u_range": (0.55, 0.95), "v_min": 0.45, "color": (0.85, 0.20, 0.15)},
+    },
+    "cardinal": {
+        "pattern": "hband",
+        "lines": [0.0, 0.5],
+        "width": 0.05,
+        "color": (0.30, 0.70, 0.95),
+        "belly": {"u_range": (0.4, 1.0), "v_min": 0.25, "color": (0.85, 0.18, 0.15)},
+    },
+    "zebra": {
+        "pattern": "hband",
+        "lines": [0.12, 0.62, 0.88, 0.38],
+        "width": 0.03,
+        "color": (0.55, 0.68, 0.80),
+    },
+    "tiger-barb": {
+        "pattern": "vstripes",
+        "stripes": [0.28, 0.48, 0.68, 0.88],
+        "width": 0.07,
+        "color": (0.08, 0.07, 0.06),
+    },
+    "angelfish": {
+        "pattern": "vstripes",
+        "stripes": [0.3, 0.55, 0.8],
+        "width": 0.1,
+        "color": (0.25, 0.28, 0.30),
+    },
+    "goldfish": {
+        "pattern": "gradient",
+        "to": (0.98, 0.55, 0.15),
+        "belly": {"u_range": (0.55, 0.95), "v_min": 0.0, "color": (0.95, 0.88, 0.78)},
+    },
+    "betta": {"pattern": "gradient", "to": (0.70, 0.15, 0.25)},
+    "platy": {"pattern": "gradient", "to": (0.90, 0.30, 0.12)},
+    "mickey": {
+        "pattern": "spot",
+        "spots": [(0.68, 0.5, 0.07), (0.58, 0.42, 0.035), (0.58, 0.58, 0.035)],
+        "color": (0.15, 0.12, 0.10),
+    },
+    "molly": None,  # 黑摩利保持纯色
 }
 
 
 def reset_scene():
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete(use_global=False)
-    for collection in (bpy.data.meshes, bpy.data.materials, bpy.data.cameras, bpy.data.lights):
+    for collection in (bpy.data.meshes, bpy.data.materials, bpy.data.cameras, bpy.data.lights, bpy.data.images):
         for item in list(collection):
             collection.remove(item)
 
@@ -170,6 +221,89 @@ def make_material(name, color, metallic=0.05, roughness=0.5):
     bsdf.inputs["Roughness"].default_value = roughness
     mat.use_backface_culling = False
     return mat
+
+
+# ---------- 程序化体色纹理 ----------
+# 体网格的圆柱展开 UV：u = 环向（0 右侧 → 0.25 背 → 0.5 左侧 → 0.75 腹），v = 头(0) → 尾(1)
+def _hash2(x, y):
+    h = (x * 374761393 + y * 668265263) & 0xFFFFFFFF
+    h = ((h ^ (h >> 13)) * 1274126177) & 0xFFFFFFFF
+    return ((h ^ (h >> 16)) & 0xFFFFFFFF) / 0xFFFFFFFF
+
+
+def pattern_color(base, tex, u, v):
+    p = tex.get("pattern")
+    if p == "vstripes":
+        for c in tex["stripes"]:
+            if abs(v - c) < tex["width"]:
+                return tex["color"]
+    elif p == "hband":
+        for c in tex["lines"]:
+            du = min(abs(u - c), abs(u - c + 1.0), abs(u - c - 1.0))
+            if du < tex["width"]:
+                return tex["color"]
+    elif p == "gradient":
+        t = v * v if v < 1 else 1.0
+        to = tex["to"]
+        return tuple(base[i] + (to[i] - base[i]) * t for i in range(3))
+    elif p == "spot":
+        for su, sv, r in tex["spots"]:
+            du = min(abs(u - su), abs(u - su + 1.0), abs(u - su - 1.0))
+            if du * du + (v - sv) * (v - sv) < r * r:
+                return tex["color"]
+    elif p == "speckle":
+        n = _hash2(int(u * 64), int(v * 32))
+        if n < tex["density"]:
+            return tex["color"]
+    # 腹部区域覆盖（如霓虹灯鱼的红色后腹、金鱼白腹）
+    belly = tex.get("belly")
+    if belly:
+        u0, u1 = belly["u_range"]
+        in_u = (u0 <= u <= u1) if u0 < u1 else (u >= u0 or u <= u1)
+        if in_u and v >= belly["v_min"]:
+            return belly["color"]
+    return base
+
+
+def make_body_image(fish_id, base_color, tex, width=128, height=64):
+    img = bpy.data.images.new("%s_body_tex" % fish_id, width=width, height=height, alpha=False)
+    px = []
+    for y in range(height):  # v：头(0) → 尾(1)
+        v = y / (height - 1)
+        for x in range(width):  # u：环向
+            u = x / (width - 1)
+            r, g, b = pattern_color(base_color, tex, u, v)
+            px.extend((r, g, b, 1.0))
+    img.pixels = px
+    return img
+
+
+def make_textured_material(name, color, img, metallic=0.05, roughness=0.5):
+    mat = make_material(name, color, metallic, roughness)
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    tex_node = nodes.new("ShaderNodeTexImage")
+    tex_node.image = img
+    bsdf = nodes.get("Principled BSDF")
+    links.new(tex_node.outputs["Color"], bsdf.inputs["Base Color"])
+    return mat
+
+
+# 体网格加圆柱展开 UV：环向 u、纵向 v；两端极点给中缝坐标
+def add_body_uv(mesh, station_count, ring_segments):
+    uv = mesh.uv_layers.new(name="body_uv")
+
+    def uv_of(vi):
+        if vi < station_count * ring_segments:
+            i = vi // ring_segments
+            k = vi % ring_segments
+            return (k / (ring_segments - 1), i / (station_count - 1))
+        return (0.5, 0.0 if vi == station_count * ring_segments else 1.0)
+
+    for poly in mesh.polygons:
+        for li, vi in zip(poly.loop_indices, poly.vertices):
+            u, v = uv_of(vi)
+            uv.data[li].uv = (u, v)
 
 
 def assign(obj, mat):
@@ -252,14 +386,23 @@ def build_fish(fish_id, out_path):
     reset_scene()
     params = FISH_PARAMS[fish_id]
     colors = params["colors"]
-    body_mat = make_material("%s_body_mat" % fish_id, colors["body"], metallic=0.08, roughness=0.42)
+    tex = TEX_OVERRIDES.get(fish_id, params.get("tex"))
+    if tex is None:
+        body_mat = make_material("%s_body_mat" % fish_id, colors["body"], metallic=0.08, roughness=0.42)
+    else:
+        img = make_body_image(fish_id, colors["body"], tex)
+        body_mat = make_textured_material(
+            "%s_body_mat" % fish_id, colors["body"], img, metallic=0.08, roughness=0.42)
     tail_mat = make_material("%s_tail_mat" % fish_id, colors["tail"], metallic=0.02, roughness=0.5)
     fin_mat = make_material("%s_fin_mat" % fish_id, colors["fin"], metallic=0.02, roughness=0.55)
     eye_mat = make_material("%s_eye_mat" % fish_id, (0.02, 0.02, 0.02), metallic=0.0, roughness=0.12)
     eye_white_mat = make_material("%s_eyew_mat" % fish_id, (0.92, 0.92, 0.88), metallic=0.0, roughness=0.35)
 
-    bv, bf = build_body(params["body"])
+    ring_segments = 24
+    bv, bf = build_body(params["body"], ring_segments)
     body_obj = new_mesh("%s_body" % fish_id, bv, bf, body_mat)
+    if tex is not None:
+        add_body_uv(body_obj.data, len(params["body"]), ring_segments)
     # 细分曲面：把低模椭圆环平滑成有机鱼体，去掉棱角感
     subsurf = body_obj.modifiers.new("subsurf", "SUBSURF")
     subsurf.levels = 2

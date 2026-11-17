@@ -18,6 +18,9 @@ import {
   type MonthlyPassState, type PaymentGateway,
 } from './core/types';
 
+// 离线推演每批 tick 数：批间让出一次主线程，避免长时间挂机回归阻塞首屏
+const OFFLINE_BATCH_TICKS = 1500;
+
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
 const findEquipment = (id: string): EquipmentSpec | undefined => EQUIPMENT_CATALOG.find((e) => e.id === id);
 const findFish = (id: string): FishSpec | undefined => FISH_CATALOG.find((f) => f.id === id);
@@ -215,9 +218,17 @@ export function createEngine(initial?: PersistedState): Engine {
       achievement: { unlocked: [...achievement.unlocked] },
       monthlyPass: { ...monthlyPass },
       lastDailyRewardDay,
-      events: eventBus.drain(),
+      events: eventBus.peek(),
     };
   }
+
+  const advanceTicks = (count: number): void => {
+    for (let i = 0; i < count; i += 1) tick();
+  };
+  const offlineResult = (ticks: number): OfflineResult => ({
+    awayGameSeconds: ticks * TICK_SECONDS,
+    events: [...new Set(eventBus.drain())],
+  });
 
   return {
     buyEquipment(specId: string) {
@@ -357,13 +368,29 @@ export function createEngine(initial?: PersistedState): Engine {
 
     fastForward(gameSeconds: number): OfflineResult {
       const ticks = Math.floor(gameSeconds / TICK_SECONDS);
-      for (let i = 0; i < ticks; i += 1) tick();
+      advanceTicks(ticks);
       // 事件去重后返回，避免摘要刷屏
-      const events = [...new Set(eventBus.drain())];
-      return { awayGameSeconds: ticks * TICK_SECONDS, events };
+      return offlineResult(ticks);
+    },
+
+    async fastForwardAsync(
+      gameSeconds: number,
+      yieldFn: () => Promise<void> = () => new Promise<void>((resolve) => { setTimeout(resolve, 0); }),
+    ): Promise<OfflineResult> {
+      const ticks = Math.floor(gameSeconds / TICK_SECONDS);
+      // 逐 tick 顺序不变，仅在批次间让出主线程，结果与同步版完全一致
+      for (let done = 0; done < ticks; done += OFFLINE_BATCH_TICKS) {
+        advanceTicks(Math.min(OFFLINE_BATCH_TICKS, ticks - done));
+        if (done + OFFLINE_BATCH_TICKS < ticks) await yieldFn();
+      }
+      return offlineResult(ticks);
     },
 
     getSnapshot,
+
+    drainEvents() {
+      return eventBus.drain();
+    },
 
     getPersistedState(savedAt: number): PersistedState {
       return {

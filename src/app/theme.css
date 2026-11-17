@@ -1,28 +1,121 @@
-/* 知鱼 · 清透海洋设计系统：浅色系、毛玻璃、圆润柔和，让鱼缸成为主角 */
+/* 知鱼 · 古风皮相：宣纸底、墨字、石绿水、朱砂点
+   结构仍沿用原来的清透布局（毛玻璃浮层 + 胶囊按钮），只换质感与配色：
+   白玻璃换宣纸，海蓝换石绿，圆角收小一点，阴影从冷蓝改成暖墨。 */
 :root {
-  --ocean-50: #f0f8fb;
-  --ocean-100: #dceff6;
-  --ocean-200: #bfe2ee;
-  --ocean-300: #8fcce0;
-  --ocean-400: #5bb2cf;
-  --ocean-500: #3a9bbd;
-  --ocean-600: #2a7f9e;
-  --ocean-700: #23667f;
-  --ink: #163847;
-  --ink-soft: #52788a;
-  --ink-faint: #84a5b3;
-  --ok: #4cb48b;
-  --warn: #e8a94b;
-  --danger: #e57373;
-  --glass: rgba(255, 255, 255, 0.62);
-  --glass-strong: rgba(255, 255, 255, 0.82);
-  --glass-border: rgba(255, 255, 255, 0.75);
-  --shadow-soft: 0 8px 32px rgba(31, 90, 110, 0.15);
-  --shadow-card: 0 4px 16px rgba(31, 90, 110, 0.1);
-  --radius-lg: 18px;
-  --radius-md: 14px;
-  --radius-sm: 10px;
+  /* 纸：由亮到暗的三层，用于页面底、卡片、分隔 */
+  --paper-50: #f8f3e7;
+  --paper-100: #f0e8d6;
+  --paper-200: #e4d8bf;
+
+  /* 石绿：取代原来的海蓝主色，取自青绿山水，低饱和 */
+  --jade-300: #a9bfae;
+  --jade-400: #7fa18c;
+  --jade-500: #5f8574;
+  --jade-600: #48695b;
+  --jade-700: #33503f;
+
+  /* 墨：正文与次要文字 */
+  --ink: #23282a;
+  --ink-soft: #5a625f;
+  --ink-faint: #8d938d;
+
+  /* 朱砂：强调、错误，古画里的那一点红 */
+  --cinnabar: #b0432f;
+  --ok: #4f7d63;
+  --warn: #b8863b;
+  --danger: #a83b2c;
+
+  /* 玻璃 → 宣纸：半透的纸色，边框改成极淡的墨线而不是高光白 */
+  /* 纸色与墨线的 RGB 分量单独抽出来：全站有十几处 rgba(纸色, x) 的浓淡，
+     拆成整色会让每处都得再定义一次。分开存分量，赛博皮只改这两个值就能整体翻黑 */
+  --paper-rgb: 250, 246, 236;
+  --line-rgb: 74, 66, 48;
+  --glass: rgba(var(--paper-rgb), 0.66);
+  --glass-strong: rgba(253, 250, 242, 0.86);
+  --glass-border: rgba(var(--line-rgb), 0.12);
+  --shadow-soft: 0 8px 30px rgba(52, 46, 32, 0.16);
+  --shadow-card: 0 4px 14px rgba(52, 46, 32, 0.1);
+
+  /* 圆角收小：18/14/10 → 12/9/6，从"圆润"往"纸页"退一步 */
+  --radius-lg: 12px;
+  --radius-md: 9px;
+  --radius-sm: 6px;
+
+  /* 字体：正文保留系统无衬线（Windows 上宋体小字会发虚、笔画断），
+     只在标题、数字与引文用衬线/楷体，古风感集中在大字上 */
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-serif: 'Songti SC', 'STSong', 'Source Han Serif SC', 'Noto Serif SC', 'SimSun', serif;
+  --font-kai: 'Kaiti SC', 'STKaiti', 'KaiTi', 'Noto Serif SC', serif;
 }
+
+/* ============ 赛博皮：冷黑底、霓虹青、紫红补光 ============
+   变量名沿用古风那一套（--paper-* / --jade-*），只把取值换成暗调。
+   好处是所有组件一行都不用改：换主题 = 换这一块变量。
+   --paper-* 在这里不再表示"纸的亮度"，而是三层抬升的暗面（越小编号越亮）。 */
+:root[data-theme='cyber'] {
+  --paper-50: #17223c;
+  --paper-100: #101a2e;
+  --paper-200: #0a1120;
+
+  --jade-300: #8ff4ff;
+  --jade-400: #46e0f5;
+  --jade-500: #17b6d6;
+  --jade-600: #0f90b4;
+  /* 这个色专门当"深色文字"用（金币数、卡片标题），暗底上必须发亮 */
+  --jade-700: #9fe8ff;
+
+  --ink: #e8f3ff;
+  --ink-soft: #a3b8d4;
+  --ink-faint: #6b7e9c;
+
+  --cinnabar: #ff5f8f;
+  --ok: #43e0b0;
+  --warn: #ffc857;
+  --danger: #ff6b7d;
+
+  --paper-rgb: 16, 26, 46;
+  --line-rgb: 110, 190, 255;
+
+  --glass: rgba(12, 20, 38, 0.72);
+  --glass-strong: rgba(18, 30, 54, 0.9);
+  --glass-border: rgba(110, 190, 255, 0.2);
+
+  --shadow-soft: 0 10px 34px rgba(0, 0, 0, 0.6);
+  --shadow-card: 0 4px 16px rgba(0, 0, 0, 0.45);
+
+  /* 标题换回无衬线：霓虹场景里配毛笔字很违和 */
+  --font-kai: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+/* 页面底：顶部偏蓝的天光 + 右下一点品红，别做成大面积渐变光斑 */
+html[data-theme='cyber'] body {
+  background:
+    radial-gradient(70% 55% at 50% -10%, rgba(40, 120, 200, 0.22), transparent 70%),
+    radial-gradient(55% 45% at 92% 96%, rgba(200, 60, 160, 0.14), transparent 72%),
+    linear-gradient(170deg, var(--paper-100), var(--paper-200));
+}
+
+html[data-theme='cyber'] h1,
+html[data-theme='cyber'] h2,
+html[data-theme='cyber'] h3 {
+  letter-spacing: 0.05em;
+  text-shadow: 0 0 14px rgba(70, 224, 245, 0.25);
+}
+
+/* 亮青底上用白字会糊，换成近黑的冷色 */
+html[data-theme='cyber'] .btn-primary,
+html[data-theme='cyber'] .shelf-badge,
+html[data-theme='cyber'] .quality-mini button.on { color: #04121f; }
+html[data-theme='cyber'] .shelf.equipped { border-color: rgba(70, 224, 245, 0.5); }
+/* 深色底上 jade-600 太闷，凡是"用主色当文字"的地方提亮到 jade-300 */
+html[data-theme='cyber'] .tab.active,
+html[data-theme='cyber'] .btn-icon.active,
+html[data-theme='cyber'] .shelf .price { color: var(--jade-300); }
+html[data-theme='cyber'] .btn-icon.active { background: rgba(70, 224, 245, 0.16); }
+html[data-theme='cyber'] .toast.notice { color: #ffd2dc; background: rgba(255, 95, 143, 0.16); }
+html[data-theme='cyber'] .event-list li.alert { color: #ffb8c6; background: rgba(255, 95, 143, 0.12); }
+html[data-theme='cyber'] .event-list li.hint { color: #ffd79a; background: rgba(255, 200, 87, 0.12); }
+
 
 * { box-sizing: border-box; }
 
@@ -32,9 +125,9 @@ html, body, #root {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: var(--font-ui);
   color: var(--ink);
-  background: linear-gradient(160deg, var(--ocean-50), var(--ocean-100));
+  background: linear-gradient(160deg, var(--paper-50), var(--paper-100));
   -webkit-font-smoothing: antialiased;
   /* 交互以拖着鱼缸旋转为主，不选中文本，避免拖拽时把界面文字刷蓝 */
   user-select: none;
@@ -43,11 +136,13 @@ body {
 
 button { font-family: inherit; cursor: pointer; }
 
-/* 毛玻璃容器 */
+h1, h2, h3 { font-family: var(--font-kai); font-weight: 600; letter-spacing: 0.02em; }
+
+/* 毛玻璃 → 宣纸浮层：降一点模糊与饱和，边框走墨线而不是高光白 */
 .glass {
   background: var(--glass);
-  -webkit-backdrop-filter: blur(18px) saturate(1.4);
-  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(14px) saturate(1.05);
+  backdrop-filter: blur(14px) saturate(1.05);
   border: 1px solid var(--glass-border);
   box-shadow: var(--shadow-soft);
 }
@@ -77,18 +172,18 @@ button { font-family: inherit; cursor: pointer; }
 .btn:active { transform: translateY(0) scale(0.97); }
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--ocean-400), var(--ocean-500));
+  background: linear-gradient(135deg, var(--jade-400), var(--jade-500));
   color: #fff;
   border: none;
 }
-.btn-primary:hover { background: linear-gradient(135deg, var(--ocean-500), var(--ocean-600)); }
+.btn-primary:hover { background: linear-gradient(135deg, var(--jade-500), var(--jade-600)); }
 
 .btn-ghost {
   background: transparent;
   border: none;
   color: var(--ink-soft);
 }
-.btn-ghost:hover { background: rgba(255, 255, 255, 0.5); color: var(--ink); }
+.btn-ghost:hover { background: rgba(var(--paper-rgb), 0.5); color: var(--ink); }
 
 .btn-icon {
   display: inline-flex;
@@ -106,8 +201,8 @@ button { font-family: inherit; cursor: pointer; }
   transition: background 0.15s ease, transform 0.15s ease, color 0.15s ease;
 }
 .btn-icon .ico { font-size: 20px; line-height: 1; }
-.btn-icon:hover { background: rgba(255, 255, 255, 0.6); color: var(--ink); transform: translateY(-2px); }
-.btn-icon.active { color: var(--ocean-600); background: rgba(91, 178, 207, 0.18); }
+.btn-icon:hover { background: rgba(var(--paper-rgb), 0.62); color: var(--ink); transform: translateY(-2px); }
+.btn-icon.active { color: var(--jade-600); background: rgba(95, 133, 116, 0.2); }
 
 /* 底部浮动操作坞 */
 .dock {
@@ -123,13 +218,36 @@ button { font-family: inherit; cursor: pointer; }
   z-index: 5;
   animation: slide-up 0.4s ease both;
 }
-.dock-divider { width: 1px; height: 34px; background: rgba(84, 120, 138, 0.25); margin: 0 4px; }
+.dock-divider { width: 1px; height: 34px; background: rgba(var(--line-rgb), 0.22); margin: 0 4px; }
+
+/* 窄屏：操作坞原来固定 64px × 8 个 = 592px，390 宽的手机上左右各溢出 100px，
+   首尾按钮点不到。这里收住最大宽度，让按钮按比例分掉剩余空间。
+   注意保留 left:50% + translateX(-50%) 的居中方式——入场动画 keyframes 里带这个位移，
+   改成 left/right 定位会被动画的 fill 状态覆盖回去 */
+@media (max-width: 600px) {
+  .dock {
+    width: calc(100% - 16px);
+    max-width: calc(100% - 16px);
+    padding: 6px 8px;
+    gap: 0;
+  }
+  .dock .btn-icon {
+    width: auto;
+    min-width: 0;
+    flex: 1 1 0;
+    height: 52px;
+    gap: 2px;
+    font-size: 10.5px;
+  }
+  .dock .btn-icon .ico { font-size: 18px; }
+  .dock-divider { height: 28px; margin: 0 1px; }
+}
 
 /* 抽屉式浮层 */
 .overlay-mask {
   position: absolute;
   inset: 0;
-  background: rgba(22, 56, 71, 0.22);
+  background: rgba(35, 40, 42, 0.26);
   z-index: 6;
   animation: fade-in 0.25s ease both;
 }
@@ -150,7 +268,7 @@ button { font-family: inherit; cursor: pointer; }
 .drawer-title h2 { margin: 0; font-size: 17px; }
 
 /* 分类标签 */
-.tabs { display: flex; gap: 6px; margin-bottom: 16px; background: rgba(255,255,255,0.5); padding: 4px; border-radius: 999px; }
+.tabs { display: flex; gap: 6px; margin-bottom: 16px; background: rgba(var(--paper-rgb), 0.5); padding: 4px; border-radius: 999px; }
 .tab {
   flex: 1;
   border: none;
@@ -161,7 +279,7 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--ink-soft);
   transition: all 0.18s ease;
 }
-.tab.active { background: #fff; color: var(--ocean-600); box-shadow: var(--shadow-card); }
+.tab.active { background: var(--paper-50); color: var(--jade-600); box-shadow: var(--shadow-card); }
 
 /* 商店货架：两列网格，每件商品带真实模型缩略图，先看清再决定买 */
 .shop-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -169,13 +287,13 @@ button { font-family: inherit; cursor: pointer; }
   display: flex;
   flex-direction: column;
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.55);
-  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: rgba(var(--paper-rgb), 0.55);
+  border: 1px solid rgba(var(--line-rgb), 0.12);
   overflow: hidden;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 .shelf:hover { transform: translateY(-2px); box-shadow: var(--shadow-card); }
-.shelf.equipped { border-color: rgba(91, 178, 207, 0.5); background: rgba(233, 246, 252, 0.72); }
+.shelf.equipped { border-color: rgba(95, 133, 116, 0.45); background: rgba(var(--paper-rgb), 0.78); }
 
 /* 缩略图区：浅色环形渐变做展示台氛围，模型图标本身已是浅底 PNG */
 .shelf-thumb {
@@ -184,7 +302,7 @@ button { font-family: inherit; cursor: pointer; }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(circle at 50% 64%, #ffffff 0%, #eef6fb 58%, #e2eef6 100%);
+  background: radial-gradient(circle at 50% 64%, var(--paper-50) 0%, var(--paper-100) 58%, var(--paper-200) 100%);
 }
 .shelf-thumb img { width: 100%; height: 100%; object-fit: contain; }
 .shelf-loading { font-size: 18px; color: var(--ink-faint); }
@@ -195,7 +313,7 @@ button { font-family: inherit; cursor: pointer; }
   font-size: 10px;
   line-height: 1.4;
   color: #fff;
-  background: var(--ocean-600);
+  background: var(--jade-600);
   padding: 1px 7px;
   border-radius: 999px;
 }
@@ -210,7 +328,7 @@ button { font-family: inherit; cursor: pointer; }
   margin-top: auto;
   padding-top: 8px;
 }
-.shelf .price { font-size: 12px; color: var(--ocean-600); font-weight: 600; }
+.shelf .price { font-size: 12px; color: var(--jade-600); font-weight: 600; }
 .shelf .in-use { font-size: 11px; color: var(--ok); }
 .btn-sm { padding: 5px 11px; font-size: 11.5px; border-radius: 999px; }
 
@@ -226,8 +344,8 @@ button { font-family: inherit; cursor: pointer; }
   display: flex;
   align-items: center;
   gap: 9px;
-  background: rgba(255, 255, 255, 0.55);
-  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: rgba(var(--paper-rgb), 0.55);
+  border: 1px solid rgba(var(--line-rgb), 0.12);
   border-radius: var(--radius-md);
   padding: 9px 11px;
 }
@@ -240,7 +358,7 @@ button { font-family: inherit; cursor: pointer; }
   align-items: center;
   justify-content: center;
   border-radius: 10px;
-  background: radial-gradient(circle at 50% 62%, #ffffff 0%, #eef6fb 70%, #e2eef6 100%);
+  background: radial-gradient(circle at 50% 62%, var(--paper-50) 0%, var(--paper-100) 70%, var(--paper-200) 100%);
   overflow: hidden;
 }
 .ci-thumb img { width: 100%; height: 100%; object-fit: contain; }
@@ -248,7 +366,7 @@ button { font-family: inherit; cursor: pointer; }
 .ci-text { min-width: 0; }
 .collection-item .ci-name { font-size: 13px; font-weight: 600; color: var(--ink); }
 .collection-item .ci-meta { font-size: 11px; color: var(--ink-faint); margin-top: 3px; }
-.collection-item.locked { background: rgba(255, 255, 255, 0.28); border-style: dashed; }
+.collection-item.locked { background: rgba(var(--paper-rgb), 0.32); border-style: dashed; }
 .collection-item.locked .ci-name { color: var(--ink-faint); font-weight: 500; }
 
 /* === 卡册分级边框与徽章 === */
@@ -311,7 +429,7 @@ button { font-family: inherit; cursor: pointer; }
   margin-top: 16px; color: #ffd890; font-size: 20px; font-weight: 700;
   letter-spacing: 2px; text-shadow: 0 0 12px rgba(255,160,60,0.8);
 }
-.card-reveal-hint { margin-top: 8px; color: rgba(255,255,255,0.6); font-size: 13px; }
+.card-reveal-hint { margin-top: 8px; color: rgba(var(--paper-rgb), 0.62); font-size: 13px; }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes card-pop { from { transform: scale(0.3); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 @keyframes card-bounce {
@@ -333,7 +451,7 @@ button { font-family: inherit; cursor: pointer; }
   align-items: center;
   justify-content: space-between;
   padding: 10px 4px;
-  border-bottom: 1px solid rgba(84, 120, 138, 0.14);
+  border-bottom: 1px solid rgba(var(--line-rgb), 0.12);
   font-size: 13px;
 }
 .water-row:last-child { border-bottom: none; }
@@ -353,6 +471,8 @@ button { font-family: inherit; cursor: pointer; }
   left: 18px;
   z-index: 4;
   text-decoration: none;
+  /* Link 默认是浏览器蓝，暗底上几乎看不见；显式取正文色 */
+  color: var(--ink);
 }
 .coin-pill {
   position: absolute;
@@ -360,7 +480,7 @@ button { font-family: inherit; cursor: pointer; }
   right: 18px;
   z-index: 4;
   font-weight: 600;
-  color: var(--ocean-700);
+  color: var(--jade-700);
 }
 
 /* 柔和提示 toast */
@@ -375,8 +495,50 @@ button { font-family: inherit; cursor: pointer; }
   font-size: 13px;
   animation: pop 0.28s ease both;
 }
-.toast.notice { color: #8a4b4b; background: rgba(255, 226, 226, 0.9); }
-.toast.info { color: var(--ocean-700); background: var(--glass-strong); }
+.toast.notice { color: #7a2e20; background: rgba(176, 67, 47, 0.12); }
+.toast.info { color: var(--jade-700); background: var(--glass-strong); }
+
+/* 点击看鱼信息卡 */
+.fish-card {
+  position: absolute;
+  top: 70px;
+  right: 18px;
+  z-index: 6;
+  width: 220px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md, 14px);
+  animation: pop-in-place 0.28s ease both;
+}
+.fish-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.fish-card-name { font-size: 15px; font-weight: 600; color: var(--jade-700); }
+.fish-card-behavior { font-size: 12px; color: var(--ink-soft); margin: 4px 0 10px; }
+.fish-card-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+.fish-card-bar span { width: 30px; }
+.fish-card-bar em { font-style: normal; width: 28px; text-align: right; }
+.fish-card-bar .bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(var(--paper-rgb), 0.55);
+  overflow: hidden;
+}
+.fish-card-bar .bar i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--jade-400), var(--jade-600));
+}
 
 /* 事件轻时间线 */
 .event-list { list-style: none; margin: 0; padding: 0; }
@@ -385,11 +547,11 @@ button { font-family: inherit; cursor: pointer; }
   padding: 7px 10px;
   margin-bottom: 6px;
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.5);
+  background: rgba(var(--paper-rgb), 0.5);
   color: var(--ink-soft);
 }
-.event-list li.alert { color: #b05a5a; background: rgba(255, 226, 226, 0.7); }
-.event-list li.hint { color: #9a7a3a; background: rgba(255, 243, 214, 0.7); }
+.event-list li.alert { color: #8d3423; background: rgba(176, 67, 47, 0.1); }
+.event-list li.hint { color: #8a6524; background: rgba(184, 134, 59, 0.12); }
 
 /* 离线回归卡片 */
 .offline-card {
@@ -400,7 +562,7 @@ button { font-family: inherit; cursor: pointer; }
   z-index: 5;
   padding: 16px;
   border-radius: var(--radius-lg);
-  animation: pop 0.32s ease both;
+  animation: pop-in-place 0.32s ease both;
 }
 .offline-card h3 { margin: 0 0 10px; font-size: 14px; }
 .offline-card ul { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--ink-soft); }
@@ -422,11 +584,13 @@ button { font-family: inherit; cursor: pointer; }
   margin-top: 14px;
 }
 .quality-mini { display: flex; gap: 4px; align-items: center; font-size: 11.5px; color: var(--ink-faint); }
-.quality-mini button { border: none; background: rgba(255,255,255,0.5); border-radius: 999px; padding: 3px 10px; font-size: 11px; color: var(--ink-soft); }
-.quality-mini button.on { background: var(--ocean-500); color: #fff; }
+.quality-mini button { border: none; background: rgba(var(--paper-rgb), 0.5); border-radius: 999px; padding: 3px 10px; font-size: 11px; color: var(--ink-soft); }
+.quality-mini button.on { background: var(--jade-500); color: #fff; }
 
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes slide-up { from { opacity: 0; transform: translate(-50%, 16px); } to { opacity: 1; transform: translate(-50%, 0); } }
 @keyframes slide-in { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
 @keyframes pop { 0% { opacity: 0; transform: translateX(-50%) scale(0.92); } 100% { opacity: 1; transform: translateX(-50%) scale(1); } }
+/* 右对齐的浮卡用这个：不带 translateX(-50%)，否则会整体左移半个自身宽度 */
+@keyframes pop-in-place { 0% { opacity: 0; transform: scale(0.94); } 100% { opacity: 1; transform: scale(1); } }
 @keyframes floaty { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }

@@ -10,7 +10,9 @@ import { ACHIEVEMENT_CATALOG } from '../../engine/progression/achievements';
 import { PAID_PRODUCT_CATALOG } from '../../engine/balance/paidShop';
 import { MockPaymentGateway } from '../../payment/MockPaymentGateway';
 import { TIME_SCALE, LIMIT } from '../../engine/balance/constants';
-import { saveGame, loadGame } from '../../persistence/saveRepository';
+import {
+  saveGame, loadGame, CorruptedSaveError, backupCorruptedSave, resetSaveDatabase,
+} from '../../persistence/saveRepository';
 import { migratePersistedState } from '../../persistence/migrate';
 import type { Engine, Snapshot, CommandResult, PersistedState } from '../../engine/core/types';
 import { Renderer } from '../../render/Renderer';
@@ -18,12 +20,21 @@ import GuideOverlay from '../components/GuideOverlay';
 import { exportProceduralFishGLTF } from '../../render/proceduralTestAsset';
 import { CanvasRecorder, downloadBlob } from '../../render/CanvasRecorder';
 import { track } from '../analytics/tracker';
+import PerfProbePanel from '../components/PerfProbePanel';
+import { applyThemeToDom, readTheme, saveTheme, THEME_OPTIONS, type UiTheme } from '../theme';
 
 const fmt = (v: number) => v.toFixed(3);
 
 // 水质状态：正常/注意/危险，用柔和状态点表达，用户无需理解专业数值
 type WaterStatus = 'ok' | 'warn' | 'danger';
 const STATUS_TEXT: Record<WaterStatus, string> = { ok: '正常', warn: '注意', danger: '危险' };
+// 鱼的行为表现文案（点击看鱼信息卡用）
+const BEHAVIOR_TEXT: Record<string, string> = {
+  normal: '安然游动',
+  anxious: '焦躁不安',
+  hiding: '躲进了水草',
+  sick: '状态不佳',
+};
 const MAX_OFFLINE_GAME_SECONDS = 8 * 60 * 60; // 离线推演封顶 8 游戏小时
 const AUTOSAVE_MS = 15000;
 // 礼遇商品没有 3D 模型，用专门的插画图标；其余商品缩略图由 glb 离屏渲染得到
@@ -61,6 +72,10 @@ export default function TankPage() {
   const [shopIcons, setShopIcons] = useState<Record<string, string>>({});
   const [environmentId, setEnvironmentId] = useState<string>(DEFAULT_ENVIRONMENT);
   const [tankShapeId, setTankShapeId] = useState<string>(DEFAULT_TANK_SHAPE);
+  // 皮相：UI 变量与 3D 场景皮肤一起换。main.tsx 已按存档值挂好了 <html data-theme>
+  const [theme, setThemeState] = useState<UiTheme>(() => readTheme());
+  // 点击看鱼：当前选中的鱼 id，null 为未选中
+  const [selectedFish, setSelectedFish] = useState<string | null>(null);
 
   // 越高越差 / 越低越差的状态判定
   const highBand = (v: number, warnAt: number, dangerAt: number): WaterStatus =>
@@ -130,8 +145,17 @@ export default function TankPage() {
   }, []);
 
   function changeQuality(tier: 'high' | 'medium' | 'low'): void {
-    rendererRef.current?.setQuality(tier);
+    rendererRef.current?.setQuality(tier, true);
     setQuality(tier);
+  }
+
+  // 统一刷新：读状态快照并消费一次待展示事件，避免命令路径把事件吞掉
+  function refreshSnapshot(): void {
+    const engine = engineRef.current;
+    if (!engine) return;
+    setSnapshot(engine.getSnapshot());
+    const events = engine.drainEvents();
+    if (events.length > 0) setEventLog((prev) => [...events, ...prev].slice(0, 8));
   }
 
   // 切换放置环境：引擎记录（影响光照/爆藻），渲染层更新背景
@@ -143,7 +167,7 @@ export default function TankPage() {
     }
     rendererRef.current?.applyEnvironment(id);
     setEnvironmentId(id);
-    setSnapshot(engineRef.current?.getSnapshot() ?? null);
+    refreshSnapshot();
   }
 
   // 切换鱼缸形状：引擎校验容量，渲染层重建几何
@@ -155,13 +179,23 @@ export default function TankPage() {
     }
     rendererRef.current?.applyTankShape(id);
     setTankShapeId(id);
-    setSnapshot(engineRef.current?.getSnapshot() ?? null);
+    refreshSnapshot();
+  }
+
+  // 切换皮相：UI 立刻换（CSS 变量），3D 皮肤等房间图预载完再换（Renderer 内部处理异步）
+  function changeTheme(id: UiTheme): void {
+    if (id === theme) return;
+    setThemeState(id);
+    saveTheme(id);
+    applyThemeToDom(id);
+    track('switch_theme', { theme: id });
+    void rendererRef.current?.setTheme(id);
   }
 
   function run(cmd: () => CommandResult): void {
     const result = cmd();
     if (!result.ok) setNotice(result.reason ?? '操作失败');
-    setSnapshot(engineRef.current?.getSnapshot() ?? null);
+    refreshSnapshot();
   }
 
   // 模拟付费购买：走 Mock 支付网关，成功后刷新快照，失败提示原因
@@ -170,7 +204,7 @@ export default function TankPage() {
     if (!engine) return;
     const result = await engine.purchaseProduct(productId, new MockPaymentGateway());
     if (!result.ok) setNotice(result.reason ?? '支付失败');
-    setSnapshot(engine.getSnapshot());
+    refreshSnapshot();
   }
 
   // M2 管线验证：用程序化生成的 glTF 替换低模占位，验证加载往返与降级
@@ -220,7 +254,12 @@ export default function TankPage() {
     let saveTimer = 0;
 
     const flushSave = () => {
-      saveGame(engineRef.current!.getPersistedState(Date.now())).catch(() => undefined);
+      // 页面在引擎初始化完成前就切走/关闭时，engineRef 还是 null，不能直接取
+      const engine = engineRef.current;
+      if (!engine) return;
+      saveGame(engine.getPersistedState(Date.now())).catch(() => {
+        if (!disposed) setNotice('自动保存失败，请检查浏览器存储空间');
+      });
     };
 
     (async () => {
@@ -229,9 +268,16 @@ export default function TankPage() {
       try {
         const rawSaved = await loadGame();
         saved = rawSaved ? migratePersistedState(rawSaved) : undefined;
-      } catch {
+      } catch (err) {
         saved = undefined;
-        if (!disposed) setNotice('存档读取失败，已为你开启新鱼缸');
+        // 损坏数据先备份再重建库，避免静默丢档且保证后续自动保存仍可写入
+        if (err instanceof CorruptedSaveError) backupCorruptedSave(err.raw);
+        await resetSaveDatabase().catch(() => undefined);
+        if (!disposed) {
+          setNotice(err instanceof CorruptedSaveError
+            ? '存档损坏：原始数据已备份，已开启新鱼缸'
+            : '存档读取失败：已重建存档空间并开启新鱼缸');
+        }
       }
       let engine: Engine;
       if (saved) {
@@ -239,7 +285,7 @@ export default function TankPage() {
         const awayRealSeconds = Math.max(0, (Date.now() - saved.savedAt) / 1000);
         const awayGameSeconds = Math.min(awayRealSeconds * TIME_SCALE, MAX_OFFLINE_GAME_SECONDS);
         if (awayGameSeconds > 60) {
-          const result = engine.fastForward(awayGameSeconds);
+          const result = await engine.fastForwardAsync(awayGameSeconds);
           if (!disposed && result.events.length > 0) setOfflineEvents(result.events);
         }
       } else {
@@ -248,11 +294,15 @@ export default function TankPage() {
       if (disposed) return;
 
       engineRef.current = engine;
-      setSnapshot(engine.getSnapshot());
+      refreshSnapshot();
       track('session_start');
 
       renderer = new Renderer(mountRef.current!);
       rendererRef.current = renderer;
+      // 开发期排查钩子：可在 DevTools 里检查场景对象与装备摆放
+      if (import.meta.env.DEV) {
+        (window as unknown as { __zhiyu?: unknown }).__zhiyu = { engine, renderer };
+      }
       // 应用存档中的放置环境
       const savedEnv = saved?.environment;
       if (savedEnv) {
@@ -264,6 +314,10 @@ export default function TankPage() {
         renderer.applyTankShape(savedShape);
         setTankShapeId(savedShape);
       }
+      // 皮相不在存档里（存 localStorage），Renderer 构造时用的是默认皮，
+      // 非默认皮要在挂载后再切一次；这次切换会先预载 16 张房间图，所以不阻塞首帧
+      const bootTheme = readTheme();
+      if (bootTheme !== 'ink') void renderer.setTheme(bootTheme);
       let uiAccumulator = 0;
       renderer.start((dt) => {
         const snap = engine.advance(dt);
@@ -273,8 +327,7 @@ export default function TankPage() {
         const uiInterval = panelRef.current ? 0.25 : 0.5;
         if (uiAccumulator >= uiInterval) {
           uiAccumulator = 0;
-          setSnapshot(engine.getSnapshot());
-          if (snap.events.length > 0) setEventLog((prev) => [...snap.events, ...prev].slice(0, 8));
+          refreshSnapshot();
         }
       });
 
@@ -286,10 +339,11 @@ export default function TankPage() {
         r.loadFishModels(FISH_CATALOG.map((f) => f.id)),
         r.loadPlantModels(PLANT_CATALOG.map((p) => p.id)),
         r.loadEquipmentModels(EQUIPMENT_CATALOG.map((e) => e.id)),
+        r.loadProps(['rock-a', 'rock-b', 'rock-c', 'driftwood']),
       ])
-        .then(async ([fishResult, plantResult, equipResult]) => {
+        .then(async ([fishResult, plantResult, equipResult, propResult]) => {
           if (disposed) return;
-          const failed = [...fishResult.failed, ...plantResult.failed, ...equipResult.failed];
+          const failed = [...fishResult.failed, ...plantResult.failed, ...equipResult.failed, ...propResult.failed];
           if (failed.length > 0) {
             setNotice(`部分模型加载失败：${failed.join('、')}`);
           }
@@ -304,12 +358,35 @@ export default function TankPage() {
     const onResize = () => renderer?.resize();
     window.addEventListener('resize', onResize);
 
+    // 点击看鱼：按下/抬起位移小于阈值视为点击（与相机拖拽区分），命中则选中
+    // 渲染器在异步块中创建，事件发生时通过 rendererRef 现取
+    let downX = 0;
+    let downY = 0;
+    const onPointerDown = (e: PointerEvent) => {
+      downX = e.clientX;
+      downY = e.clientY;
+    };
+    const onPointerUp = (e: PointerEvent) => {
+      const r = rendererRef.current;
+      if (!r) return;
+      if (Math.hypot(e.clientX - downX, e.clientY - downY) >= 6) return;
+      const id = r.pickFish(e.clientX, e.clientY);
+      setSelectedFish(id);
+      r.setSelectedFish(id);
+      if (id) track('select_fish');
+    };
+    const mount = mountRef.current;
+    mount?.addEventListener('pointerdown', onPointerDown);
+    mount?.addEventListener('pointerup', onPointerUp);
+
     return () => {
       disposed = true;
       window.clearInterval(saveTimer);
       document.removeEventListener('visibilitychange', flushSave);
       document.removeEventListener('beforeunload', flushSave);
       window.removeEventListener('resize', onResize);
+      mount?.removeEventListener('pointerdown', onPointerDown);
+      mount?.removeEventListener('pointerup', onPointerUp);
       renderer?.dispose();
       rendererRef.current = null;
       if (recorderRef.current?.isRecording) {
@@ -355,7 +432,7 @@ export default function TankPage() {
         <GuideOverlay
           engine={engineRef.current}
           snapshot={snapshot}
-          onChanged={() => setSnapshot(engineRef.current?.getSnapshot() ?? null)}
+          onChanged={refreshSnapshot}
         />
       )}
 
@@ -374,6 +451,39 @@ export default function TankPage() {
 
       {/* 柔和提示，自动出现而非弹窗 */}
       {notice && <div className="toast notice" onClick={() => setNotice(null)}>{notice}</div>}
+
+      {/* 点击看鱼：选中信息卡，鱼离开后自动消失 */}
+      {(() => {
+        const fish = selectedFish ? snapshot?.fishes.find((f) => f.id === selectedFish) : undefined;
+        if (!fish) return null;
+        const healthPct = Math.round(fish.health * 100);
+        const hungerPct = Math.round(fish.hunger * 100);
+        return (
+          <div className="fish-card glass">
+            <div className="fish-card-head">
+              <span className="fish-card-name">{fish.name}</span>
+              <button
+                className="btn btn-ghost"
+                onClick={() => { setSelectedFish(null); rendererRef.current?.setSelectedFish(null); }}
+              >✕</button>
+            </div>
+            <div className="fish-card-behavior">{BEHAVIOR_TEXT[fish.behavior] ?? fish.behavior}</div>
+            <div className="fish-card-bar">
+              <span>健康</span>
+              <div className="bar"><i style={{ width: `${healthPct}%` }} /></div>
+              <em>{healthPct}</em>
+            </div>
+            <div className="fish-card-bar">
+              <span>饱腹</span>
+              <div className="bar"><i style={{ width: `${hungerPct}%` }} /></div>
+              <em>{hungerPct}</em>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* 前台性能验收：仅 URL 带 ?perf=N 时出现 */}
+      <PerfProbePanel />
 
       {/* 商店抽屉：鱼/水草/装备三个分类，按需打开、看完即收 */}
       {panel === 'shop' && (
@@ -555,6 +665,18 @@ export default function TankPage() {
               ))}
             </div>
 
+            {/* 皮相：房间照片、缸体质感、界面配色一起换 */}
+            <h3 style={{ fontSize: 13, margin: '4px 0 8px', color: 'var(--ink-soft)' }}>房间风格</h3>
+            <div className="quality-mini" style={{ marginBottom: 14 }}>
+              {THEME_OPTIONS.map((opt) => (
+                <button
+                  key={opt.id}
+                  className={theme === opt.id ? 'on' : ''}
+                  onClick={() => changeTheme(opt.id)}
+                >{opt.name}</button>
+              ))}
+            </div>
+
             {waterRows.map(([k, v, st]) => (
               <div className="water-row" key={k}>
                 <span className="label">
@@ -578,12 +700,16 @@ export default function TankPage() {
                 ))}
             </ul>
 
-            {/* 开发/画质工具，收在底部不占主界面 */}
+            {/* 导出存档是产品功能；glTF 管线验证按钮仅开发环境可见 */}
             <div className="tools-row">
-              <button className="btn" onClick={loadAllFishModels}>加载全部鱼模型</button>
-              <button className="btn" onClick={loadBuiltInFish}>加载自制孔雀鱼</button>
-              <button className="btn" onClick={verifyModelPipeline}>切换 glTF 模型</button>
               <button className="btn" onClick={exportSave}>导出存档</button>
+              {import.meta.env.DEV && (
+                <>
+                  <button className="btn" onClick={loadAllFishModels}>加载全部鱼模型</button>
+                  <button className="btn" onClick={loadBuiltInFish}>加载自制孔雀鱼</button>
+                  <button className="btn" onClick={verifyModelPipeline}>切换 glTF 模型</button>
+                </>
+              )}
             </div>
             <div className="quality-mini" style={{ marginTop: 12 }}>
               <span>FPS {fps} ·</span>
@@ -731,7 +857,7 @@ export default function TankPage() {
           <button className="btn-icon" onClick={() => { track('feed'); run(() => engineRef.current!.feed(1)); }}>喂食</button>
           <button className="btn-icon" onClick={() => { track('water_change'); run(() => engineRef.current!.changeWater(1 / 3)); }}>换水</button>
           <button
-            className={lightOn ? 'btn-icon active' : 'btn-icon'}
+            className="btn-icon"
             onClick={() => {
               const next = !lightOn;
               setLightOn(next);

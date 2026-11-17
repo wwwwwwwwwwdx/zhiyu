@@ -97,8 +97,33 @@ const migrations: Record<number, (state: PersistedState) => PersistedState> = {
   },
 };
 
+// 存档结构校验：只校验恢复引擎所必需的最小字段，旧版本缺字段交给迁移补齐，
+// 避免把合法旧档误判为损坏。用于 IndexedDB 读取后的第一道防线。
+export function isPersistedState(value: unknown): value is PersistedState {
+  if (typeof value !== 'object' || value === null) return false;
+  const s = value as Record<string, unknown>;
+  const w = s.water;
+  if (typeof w !== 'object' || w === null) return false;
+  const water = w as Record<string, unknown>;
+  const waterKeys = ['nh3', 'no2', 'no3', 'b1', 'b2', 'o2', 'ph', 'temp'];
+  return typeof s.version === 'number' && Number.isInteger(s.version) && s.version >= 1
+    && typeof s.savedAt === 'number' && Number.isFinite(s.savedAt)
+    && typeof s.gameTime === 'number' && Number.isFinite(s.gameTime)
+    && typeof s.coins === 'number' && Number.isFinite(s.coins)
+    && waterKeys.every((k) => typeof water[k] === 'number' && Number.isFinite(water[k] as number))
+    && Array.isArray(s.fishes)
+    && Array.isArray(s.ownedEquipment)
+    && typeof s.installed === 'object' && s.installed !== null;
+}
+
 // 加载存档后逐版本迁移到当前版本；缺失迁移路径时快速失败，避免静默使用脏数据
 export function migratePersistedState(state: PersistedState): PersistedState {
+  if (!Number.isInteger(state.version) || state.version < 1) {
+    throw new Error('存档版本号无效');
+  }
+  if (state.version > CURRENT_SAVE_VERSION) {
+    throw new Error(`存档版本 v${state.version} 高于当前程序支持的 v${CURRENT_SAVE_VERSION}，请升级后重试`);
+  }
   let current = state;
   while (current.version < CURRENT_SAVE_VERSION) {
     const migrate = migrations[current.version];

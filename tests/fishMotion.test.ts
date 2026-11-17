@@ -45,7 +45,7 @@ describe('鱼游动差异化', () => {
 
   it('从边界附近出发会被拉回内侧，不越界', () => {
     const start: MotionState = {
-      x: TANK_MOTION_BOUNDS.halfX, y: 0, z: 0, heading: 0, seed: 1,
+      x: TANK_MOTION_BOUNDS.halfX, y: 0, z: 0, heading: 0, seed: 1, turnRate: 0,
     };
     const after = runMany(start, 'neon', 100);
     expect(after.x).toBeLessThanOrEqual(TANK_MOTION_BOUNDS.halfX);
@@ -83,5 +83,36 @@ describe('鱼游动差异化', () => {
     expect(
       Math.abs(after.x - base.x) + Math.abs(after.z - base.z) + Math.abs(after.y - base.y),
     ).toBeGreaterThan(0);
+  });
+
+  it('垂直起伏限制在偏好水层附近，不会像电梯直上直下', () => {
+    // 长时间运行后，纵坐标应始终落在 centerY ± yRange*1.2 内
+    let state = createMotionState('angelfish', Math.random);
+    const cfg = FISH_MOTION_CONFIG.angelfish;
+    for (let i = 0; i < 600; i++) {
+      state = updateMotion({
+        state, specId: 'angelfish', behaviorSpeed: 1, dt: 0.05, time: i * 0.05,
+        rand: Math.random, bounds: TANK_MOTION_BOUNDS,
+      });
+      expect(Math.abs(state.y - cfg.centerY)).toBeLessThanOrEqual(cfg.yRange * 1.2);
+    }
+  });
+
+  it('转向角速度平滑：单步跳变被低通限制，不会逐帧抖动', () => {
+    // 固定随机数时每帧转向增量相同，平滑后的 turnRate 应逐步逼近而不是一步到位
+    const s0 = createMotionState('zebra', fixedRand);
+    const afterOne = updateMotion({
+      state: s0, specId: 'zebra', behaviorSpeed: 1, dt: 0.05, time: 0,
+      rand: () => 1, bounds: TANK_MOTION_BOUNDS,
+    });
+    const afterTwo = updateMotion({
+      state: afterOne, specId: 'zebra', behaviorSpeed: 1, dt: 0.05, time: 0.05,
+      rand: () => 1, bounds: TANK_MOTION_BOUNDS,
+    });
+    const firstStep = Math.abs(afterOne.turnRate - s0.turnRate);
+    const secondStep = Math.abs(afterTwo.turnRate - afterOne.turnRate);
+    expect(firstStep).toBeGreaterThan(0);
+    // 第二步的增量应小于第一步（指数逼近），说明在平滑而不是直接跳到目标值
+    expect(secondStep).toBeLessThan(firstStep);
   });
 });

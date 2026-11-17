@@ -1,4 +1,9 @@
 import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { Snapshot } from '../engine/core/types';
 import { loadModel } from './ModelLoader';
 import { IconRenderer } from './IconRenderer';
@@ -6,18 +11,44 @@ import { CameraController } from './CameraController';
 import { PerformanceMonitor, QUALITY_PRESET, tierFromFps, type QualityTier } from './PerformanceMonitor';
 import { createMotionState, updateMotion, type MotionState, type MotionBounds } from './fishMotion';
 import { getRareVariant, COMMON_VARIANT } from '../engine/biology/variants';
-import { getEnvironment, DEFAULT_ENVIRONMENT, type EnvironmentConfig } from '../engine/balance/environments';
+import { getEnvironment, ENVIRONMENT_CATALOG, DEFAULT_ENVIRONMENT, type EnvironmentConfig } from '../engine/balance/environments';
 import { getTankShape, DEFAULT_TANK_SHAPE, type TankShapeSpec } from '../engine/balance/tankShapes';
 import { PLANT_CATALOG, EQUIPMENT_CATALOG } from '../engine/balance/catalog';
+import { DEFAULT_SCENE_SKIN, getSkin, type SceneSkin } from './sceneSkin';
 
-const FISH_COLORS = [0xff7043, 0x66bb6a, 0xffca28, 0x42a5f5, 0xab47bc, 0xef5350, 0x26c6da, 0xffa726];
-const PLANT_GREENS = [0x4caf50, 0x66bb6a, 0x388e3c];
+// 每条鱼独立的游泳画像。
+// 模板 clone 会共享 geometry 与 material，所以这里的 uniform 必须挂在逐鱼克隆出的
+// 材质上，否则整缸鱼共用一个相位，摆尾会完全同步。
+interface SwimProfile {
+  phase: number;
+  freq: number; // 角频率（弧度/秒），由个体实时游速驱动
+  yaw: number; // 尾部最大偏转角（弧度）
+  speed: number; // 平滑后的游速，单位/秒
+  bodyLength: number; // 模型实际体长，偏转角按它换算横向摆幅
+  phaseUniform: { value: number };
+  uniforms: {
+    uSwimFreq: { value: number };
+    uSwimYaw: { value: number };
+    uTurnBend: { value: number };
+    uBodyMaxX: { value: number };
+    uBodyInvLen: { value: number };
+  };
+  pecs: Array<{ obj: THREE.Object3D; baseY: number; side: number }>;
+}
 
 // M2 渲染：鱼群随引擎快照动态增减，支持 glTF 模型替换低模占位，失败降级
 export class Renderer {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
   private camera: THREE.PerspectiveCamera;
+  // 场景皮肤：颜色、光照、水色全部从这里取，换风格只改 sceneSkin 里的对象
+  private skin: SceneSkin = DEFAULT_SCENE_SKIN;
+  // 换皮期间置位，挡掉连续点击造成的重复预载
+  private themeSwitching = false;
+  // 真正建完的皮肤（this.skin 在预载阶段就已指向目标皮，不能用来判断"是否已完成"）
+  private appliedTheme: SceneSkin['id'] = DEFAULT_SCENE_SKIN.id;
+  // 预载期间又被点了另一套皮：先记下来，等这次切完再切一次，避免 UI 与场景不一致
+  private pendingTheme: SceneSkin['id'] | null = null;
   private fishMeshes = new Map<string, THREE.Object3D>();
   private fishMotion = new Map<string, MotionState>();
   private plantMeshes = new Map<string, THREE.Object3D>();
@@ -28,16 +59,23 @@ export class Renderer {
   private plantTemplates = new Map<string, THREE.Object3D>();
   // 按装备 specId 存放 glb 模板（归一化高度 1、原点在底部）
   private equipmentTemplates = new Map<string, THREE.Object3D>();
+  // 造景道具（岩石/沉木）模板与缸内实体组
+  private propTemplates = new Map<string, THREE.Object3D>();
+  private propGroup: THREE.Group | null = null;
   // 离屏图标渲染器与商品缩略图缓存（specId -> PNG dataURL）
   private iconRenderer: IconRenderer | null = null;
   private iconCache = new Map<string, string>();
   // 程序化地板木纹（只创建一次，环境切换复用）
   private floorTexture: THREE.Texture | null = null;
+  // 地板纹理是按皮肤生成的（木纹 / 金属板），记录生成时的皮肤 id，换皮要重做
+  private floorTextureTheme = '';
   // 已安装装备的实体（type 之外按 specId 去重）与上次的安装签名
   private equipmentMeshes = new Map<string, THREE.Object3D>();
   private equipmentSignature = '';
   // CO2 是否已装：决定气泡从细化器（右后侧）成股冒出，而非全缸随机
   private co2Installed = false;
+  // 已安装灯型 id（影响灯盘亮度/色温），null 表示未装灯
+  private installedLightId: string | null = null;
   // 各水草成熟时的目标视觉高度；幼苗到成熟按 size/maxSize 比例缩放
   // 按真实水族比例：水榕低矮阔叶、蜈蚣草高、莫丝贴地、红宫廷中等高、皇冠草中等莲座
   private plantMatureHeight: Record<string, number> = {
@@ -47,18 +85,31 @@ export class Renderer {
     'plant-rotala': 1.8,
     'plant-sword': 1.15,
   };
-  // 各水草摆动特性：振幅（弧度）、频率（Hz）——水下水流缓慢，植物只微微摇曳
-  // 细茎软叶摆幅稍大但仍很慢，硬阔叶/苔藓几乎不动
-  private plantSway: Record<string, { amp: number; freq: number }> = {
-    'plant-anubias': { amp: 0.006, freq: 0.07 },
-    'plant-hornwort': { amp: 0.035, freq: 0.12 },
-    'plant-moss': { amp: 0.003, freq: 0.05 },
-    'plant-rotala': { amp: 0.028, freq: 0.15 },
-    'plant-sword': { amp: 0.010, freq: 0.08 },
-  };
   private lastSnapshot: Snapshot | null = null;
   private monitor = new PerformanceMonitor();
   private quality: QualityTier = 'high';
+  private autoQuality = true;
+  // 后期合成与 PBR 环境反射
+  private composer!: EffectComposer;
+  private bloomPass!: UnrealBloomPass;
+  private envTexture: THREE.Texture | null = null;
+  // 三盏灯留引用：换皮肤时只改颜色与强度，不必重建灯光与阴影贴图
+  private ambientLight: THREE.AmbientLight | null = null;
+  private keyLight: THREE.DirectionalLight | null = null;
+  private fillLight: THREE.DirectionalLight | null = null;
+  // 全局游动时间，注入鱼与水草材质的顶点动画（各鱼的频率另有逐鱼 uniform）
+  private swimTime = { value: 0 };
+  private causticsTexture: THREE.Texture | null = null;
+  private waterNormalTexture: THREE.Texture | null = null;
+  private sandTexture: THREE.Texture | null = null;
+  // 鱼的上一帧姿态，用于俯仰与转向侧倾
+  private fishPose = new Map<string, { pitch: number; roll: number }>();
+  // 每条鱼各自的游泳画像（相位/频率/振幅/胸鳍）
+  private fishSwim = new Map<string, SwimProfile>();
+  // 点击看鱼：拾取与选中标记
+  private raycaster = new THREE.Raycaster();
+  private selectionRing: THREE.Mesh | null = null;
+  private selectedFishId: string | null = null;
   private raf = 0;
   private isDisposed = false;
   private container: HTMLElement;
@@ -78,6 +129,8 @@ export class Renderer {
   // 背景纹理：加载器与按环境缓存，避免切换时重复加载
   private textureLoader = new THREE.TextureLoader();
   private backgroundTextures = new Map<string, THREE.Texture>();
+  // 当前放置环境 id：换皮肤要按同一环境重建房间，得记住它
+  private environmentId: string = DEFAULT_ENVIRONMENT;
   // 缸体组：玻璃、水、底砂，随形状重建
   private tankGroup: THREE.Group | null = null;
   private shapeSpec: TankShapeSpec;
@@ -89,6 +142,12 @@ export class Renderer {
   constructor(container: HTMLElement) {
     this.container = container;
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    // 游戏级观感基线：ACES 电影级色调映射 + 柔和阴影
+    // 曝光刻意压在 1.0 以下：浅色缸体 + 环境反射叠在一起很容易过曝发白
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 0.92;
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     container.appendChild(this.renderer.domElement);
@@ -97,13 +156,52 @@ export class Renderer {
     this.camera.position.set(0, 2.8, 10);
     this.camera.lookAt(0, 0, 0);
 
-    // 清透海洋：场景本身用柔和浅青背景，而非黑色
-    this.scene.background = new THREE.Color(0xd6ecf4);
+    // 场景底色与雾：取自皮肤，古风皮是宣纸色，远处墙体自然渐隐
+    this.scene.background = new THREE.Color(this.skin.background);
+    this.scene.fog = new THREE.FogExp2(this.skin.fogColor, this.skin.fogDensity);
 
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.75));
-    const keyLight = new THREE.DirectionalLight(0xffffff, 1.3);
-    keyLight.position.set(4, 8, 5);
+    // 暖主光（带阴影）+ 冷补光：冷暖对比让画面有层次
+    this.ambientLight = new THREE.AmbientLight(this.skin.ambientColor, this.skin.ambientIntensity);
+    this.scene.add(this.ambientLight);
+    const keyLight = new THREE.DirectionalLight(this.skin.keyColor, this.skin.keyIntensity);
+    keyLight.position.set(4, 9, 5);
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.set(1024, 1024);
+    keyLight.shadow.camera.left = -9;
+    keyLight.shadow.camera.right = 9;
+    keyLight.shadow.camera.top = 9;
+    keyLight.shadow.camera.bottom = -9;
+    keyLight.shadow.camera.near = 1;
+    keyLight.shadow.camera.far = 30;
+    keyLight.shadow.bias = -0.0004;
     this.scene.add(keyLight);
+    this.keyLight = keyLight;
+    const fillLight = new THREE.DirectionalLight(this.skin.fillColor, this.skin.fillIntensity);
+    fillLight.position.set(-6, 4, -4);
+    this.scene.add(fillLight);
+    this.fillLight = fillLight;
+
+    // PBR 环境反射：给玻璃、金属与鱼体提供真实高光来源
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.envTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    this.scene.environment = this.envTexture;
+    this.scene.environmentIntensity = this.skin.environmentIntensity;
+    pmrem.dispose();
+
+    // 后期管线：HDR 渲染 + Bloom（发光体泛光）+ 输出级色调映射；MSAA 采样保留抗锯齿
+    const rt = new THREE.WebGLRenderTarget(
+      container.clientWidth, container.clientHeight,
+      { type: THREE.HalfFloatType, samples: 4 },
+    );
+    this.composer = new EffectComposer(this.renderer, rt);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    // Bloom 只让真正的发光体（灯盘、鱼鳞高光）泛光，强度压低避免整屏发灰
+    this.bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(container.clientWidth, container.clientHeight),
+      this.skin.bloom.strength, this.skin.bloom.radius, this.skin.bloom.threshold,
+    );
+    this.composer.addPass(this.bloomPass);
+    this.composer.addPass(new OutputPass());
 
     // 缸体（玻璃、水、底砂）按形状参数生成，默认长方缸
     this.shapeSpec = getTankShape(DEFAULT_TANK_SHAPE);
@@ -112,7 +210,7 @@ export class Renderer {
 
     // 气泡与柔和水面光束
     this.bubbleTexture = this.makeBubbleTexture();
-    this.createBubbles(40);
+    this.createBubbles(QUALITY_PRESET[this.quality].bubbles);
     this.createLightShaft();
 
     // 视角拖拽与缩放，绑定到 canvas
@@ -121,6 +219,173 @@ export class Renderer {
 
     // 默认放置环境（书房桌面）
     this.applyEnvironment(DEFAULT_ENVIRONMENT);
+  }
+
+  // 程序化焦散纹理：平铺 Voronoi 边界亮线，模拟水面阳光聚焦网络
+  private getCausticsTexture(): THREE.Texture {
+    if (!this.causticsTexture) this.causticsTexture = this.makeCausticsTexture();
+    return this.causticsTexture;
+  }
+  private makeCausticsTexture(): THREE.Texture {
+    const size = 128;
+    const cells = 24;
+    let seed = 7;
+    const rand = () => {
+      seed = (seed * 16807) % 2147483647;
+      return seed / 2147483647;
+    };
+    const pts: Array<[number, number]> = [];
+    for (let i = 0; i < cells; i += 1) pts.push([rand() * size, rand() * size]);
+    const c = document.createElement('canvas');
+    c.width = size;
+    c.height = size;
+    const ctx = c.getContext('2d')!;
+    const img = ctx.createImageData(size, size);
+    for (let y = 0; y < size; y += 1) {
+      for (let x = 0; x < size; x += 1) {
+        let d1 = Infinity;
+        let d2 = Infinity;
+        for (const [px, py] of pts) {
+          // 环面距离（平铺周期），保证纹理无缝
+          let dx = Math.abs(x - px);
+          dx = Math.min(dx, size - dx);
+          let dy = Math.abs(y - py);
+          dy = Math.min(dy, size - dy);
+          const d = Math.hypot(dx, dy);
+          if (d < d1) {
+            d2 = d1;
+            d1 = d;
+          } else if (d < d2) {
+            d2 = d;
+          }
+        }
+        const v = Math.round(Math.pow(1 - Math.min(1, (d2 - d1) / 6), 3) * 255);
+        const i = (y * size + x) * 4;
+        img.data[i] = Math.round(v * 0.85);
+        img.data[i + 1] = v;
+        img.data[i + 2] = v;
+        img.data[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(3, 2);
+    return tex;
+  }
+
+  // 程序化水面法线：多八度 value noise 高度场求梯度，编码为法线贴图
+  private getWaterNormalTexture(): THREE.Texture {
+    if (!this.waterNormalTexture) this.waterNormalTexture = this.makeWaterNormalTexture();
+    return this.waterNormalTexture;
+  }
+  private makeWaterNormalTexture(): THREE.Texture {
+    const size = 256;
+    let seed = 11;
+    const rand = () => {
+      seed = (seed * 16807) % 2147483647;
+      return seed / 2147483647;
+    };
+    const grids = [8, 16, 32].map((n) => {
+      const g = new Array<number>(n * n);
+      for (let i = 0; i < n * n; i += 1) g[i] = rand();
+      return { n, g };
+    });
+    const sample = (fx: number, fy: number): number => {
+      let sum = 0;
+      let amp = 1;
+      let total = 0;
+      for (const { n, g } of grids) {
+        const x = fx * n;
+        const y = fy * n;
+        const xi = Math.floor(x);
+        const yi = Math.floor(y);
+        const x0 = ((xi % n) + n) % n;
+        const y0 = ((yi % n) + n) % n;
+        const x1 = (x0 + 1) % n;
+        const y1 = (y0 + 1) % n;
+        const tx = x - xi;
+        const ty = y - yi;
+        const sx = tx * tx * (3 - 2 * tx);
+        const sy = ty * ty * (3 - 2 * ty);
+        const v00 = g[y0 * n + x0];
+        const v10 = g[y0 * n + x1];
+        const v01 = g[y1 * n + x0];
+        const v11 = g[y1 * n + x1];
+        sum += (v00 + (v10 - v00) * sx + (v01 - v00) * sy + (v00 - v10 - v01 + v11) * sx * sy) * amp;
+        total += amp;
+        amp *= 0.5;
+      }
+      return sum / total;
+    };
+    const height = new Float32Array(size * size);
+    for (let y = 0; y < size; y += 1) {
+      for (let x = 0; x < size; x += 1) height[y * size + x] = sample(x / size, y / size);
+    }
+    const c = document.createElement('canvas');
+    c.width = size;
+    c.height = size;
+    const ctx = c.getContext('2d')!;
+    const img = ctx.createImageData(size, size);
+    const at = (x: number, y: number): number =>
+      height[(((y % size) + size) % size) * size + (((x % size) + size) % size)];
+    const strength = 3.2;
+    for (let y = 0; y < size; y += 1) {
+      for (let x = 0; x < size; x += 1) {
+        const dx = (at(x + 1, y) - at(x - 1, y)) * strength;
+        const dz = (at(x, y + 1) - at(x, y - 1)) * strength;
+        const len = Math.hypot(dx, 1, dz);
+        const i = (y * size + x) * 4;
+        img.data[i] = Math.round((-dx / len) * 127 + 127);
+        img.data[i + 1] = Math.round((1 / len) * 127 + 127);
+        img.data[i + 2] = Math.round((-dz / len) * 127 + 127);
+        img.data[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(2, 2);
+    return tex;
+  }
+
+  // 程序化底砂纹理：细沙颗粒与深浅色斑
+  private getSandTexture(): THREE.Texture {
+    if (!this.sandTexture) this.sandTexture = this.makeSandTexture();
+    return this.sandTexture;
+  }  private makeSandTexture(): THREE.Texture {
+    const size = 256;
+    const c = document.createElement('canvas');
+    c.width = size;
+    c.height = size;
+    const ctx = c.getContext('2d')!;
+    ctx.fillStyle = this.skin.sandBase;
+    ctx.fillRect(0, 0, size, size);
+    let seed = 23;
+    const rand = () => {
+      seed = (seed * 16807) % 2147483647;
+      return seed / 2147483647;
+    };
+    const [r0, g0, b0] = this.skin.sandTone;
+    for (let i = 0; i < 2600; i += 1) {
+      const x = rand() * size;
+      const y = rand() * size;
+      const r = 0.6 + rand() * 1.4;
+      const k = rand() * this.skin.sandToneSpread;
+      const ch = (v: number) => Math.max(0, Math.min(255, Math.round(v + k)));
+      ctx.fillStyle = `rgba(${ch(r0)}, ${ch(g0)}, ${ch(b0)}, ${0.25 + rand() * 0.3})`;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(3, 2);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
   }
 
   // 程序化生成圆形气泡纹理：中心亮、边缘柔，避免 Points 默认方形
@@ -208,7 +473,8 @@ export class Renderer {
 
   // 灯具实体 + 光束：缸上方支架式灯盘，光束从灯盘向下发出，随灯光开关联动
   private createLightShaft(): void {
-    this.shaftTexture = this.makeShaftTexture();
+    // 纹理是中性灰渐变，只由材质 color 上色；换皮重建灯具时不能重做，否则旧纹理泄漏
+    if (!this.shaftTexture) this.shaftTexture = this.makeShaftTexture();
     const lampGroup = new THREE.Group();
 
     // 缸口横向/纵向尺寸：box 用 width/depth，cylinder 用直径；灯具按比例适配，不伸出缸外
@@ -219,34 +485,79 @@ export class Renderer {
     const lampD = tankD * 0.62;
     const postX = tankW * 0.45;
 
-    // 灯盘外壳：深色扁平盒，位于缸正上方
-    const shellMat = new THREE.MeshStandardMaterial({ color: 0x2a414e, roughness: 0.5, metalness: 0.2 });
-    const shell = new THREE.Mesh(new THREE.BoxGeometry(lampW, 0.2, lampD), shellMat);
-    shell.position.y = 1.95;
-    lampGroup.add(shell);
+    // 灯具做成"木横梁 + 铜件"：原来是一整块深色扁盒，在暖色房间里像一根黑梁，
+    // 现在改成截面更厚的木梁、两端出梁头、上下沿包通长铜条，灯罩外再围一圈铜框。
+    const beamY = 1.95;
+    const woodMat = new THREE.MeshStandardMaterial({ color: this.skin.lampShell, roughness: 0.72, metalness: 0.06 });
+    // 铜件别用满金属度：场景环境反射强度只有 0.16，纯金属在这里会发黑，
+    // 反而看不出是铜。降到 0.55 保留一点漫反射底色，铜色才亮得起来
+    const brassMat = new THREE.MeshStandardMaterial({ color: this.skin.brass, roughness: 0.42, metalness: 0.55 });
+
+    const beam = new THREE.Mesh(new THREE.BoxGeometry(lampW, 0.2, lampD), woodMat);
+    beam.position.y = beamY;
+    lampGroup.add(beam);
+    // 梁头：两端各一段略高略宽的方木，像穿出墙面的横梁，比纯方块更有木构感
+    for (const sx of [-1, 1]) {
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.3, lampD * 1.08), woodMat);
+      cap.position.set(sx * (lampW / 2 - 0.07), beamY, 0);
+      lampGroup.add(cap);
+    }
+    // 包角铜线：沿梁的四条长棱各贴一根窄条。
+    // 不能做成横跨梁顶的整片——俯视时会变成一块金色台面，看不出是"包边"
+    for (const dy of [0.088, -0.088]) {
+      for (const sz of [-1, 1]) {
+        const strip = new THREE.Mesh(new THREE.BoxGeometry(lampW + 0.02, 0.05, 0.03), brassMat);
+        strip.position.set(0, beamY + dy, sz * (lampD / 2 + 0.005));
+        lampGroup.add(strip);
+      }
+    }
+
     // 灯盘底面发光板：开灯时自发光，关灯时变暗
     this.lampGlowMat = new THREE.MeshStandardMaterial({
-      color: 0xeaf6fb, emissive: 0xbfe6f5, emissiveIntensity: 1.2, roughness: 0.4,
+      color: this.skin.lampGlow, emissive: this.skin.lampGlowEmissive, emissiveIntensity: 1.2, roughness: 0.4,
     });
-    const glow = new THREE.Mesh(new THREE.BoxGeometry(lampW * 0.92, 0.05, lampD * 0.82), this.lampGlowMat);
+    const glowW = lampW * 0.84;
+    const glowD = lampD * 0.72;
+    const glow = new THREE.Mesh(new THREE.BoxGeometry(glowW, 0.05, glowD), this.lampGlowMat);
     glow.position.y = 1.83;
     lampGroup.add(glow);
+    // 灯罩铜框：四条细铜条围住发光板，把"一块塑料板"框成一盏灯
+    const rimY = 1.83;
+    for (const sz of [-1, 1]) {
+      const rim = new THREE.Mesh(new THREE.BoxGeometry(glowW + 0.09, 0.09, 0.045), brassMat);
+      rim.position.set(0, rimY, sz * (glowD / 2 + 0.022));
+      lampGroup.add(rim);
+    }
+    for (const sx of [-1, 1]) {
+      const rim = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.09, glowD + 0.09), brassMat);
+      rim.position.set(sx * (glowW / 2 + 0.022), rimY, 0);
+      lampGroup.add(rim);
+    }
 
-    // 两侧立柱与底座：从底柜台面撑起灯盘
-    const postMat = new THREE.MeshStandardMaterial({ color: 0x2f5d70, roughness: 0.5, metalness: 0.3 });
+    // 两侧立柱与底座：从底柜台面撑起横梁，柱身加两道铜箍
+    const postMat = new THREE.MeshStandardMaterial({ color: this.skin.lampPost, roughness: 0.62, metalness: 0.12 });
     for (const sx of [-postX, postX]) {
       const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, 4.1, 0.14), postMat);
       post.position.set(sx, 0, 0);
       lampGroup.add(post);
+      for (const gy of [1.15, -1.15]) {
+        const hoop = new THREE.Mesh(new THREE.BoxGeometry(0.175, 0.055, 0.175), brassMat);
+        hoop.position.set(sx, gy, 0);
+        lampGroup.add(hoop);
+      }
       const foot = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.1, 0.42), postMat);
       foot.position.set(sx, -2.05, 0);
       lampGroup.add(foot);
+      // 底座铜面：踩在台面上的一层薄铜，和梁上的铜条呼应
+      const footPlate = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.018, 0.44), brassMat);
+      footPlate.position.set(sx, -1.99, 0);
+      lampGroup.add(footPlate);
     }
 
     // 光束：从灯盘下方发出，顶部对齐灯盘，底部自然淡出；尺寸随灯盘比例，轻微倾斜让边缘可辨
     const material = new THREE.MeshBasicMaterial({
       map: this.shaftTexture,
-      color: 0x8fc4dd, // 带实际色相的青，配合透明渐变，在浅色背景上柔和可见
+      color: this.skin.shaft, // 带实际色相的青，配合透明渐变，在浅色背景上柔和可见
       transparent: true,
       depthWrite: false,
       side: THREE.DoubleSide,
@@ -270,8 +581,9 @@ export class Renderer {
     this.currentLightOn = on;
     if (this.lightShaft) this.lightShaft.visible = on;
     if (this.lampGlowMat) {
-      this.lampGlowMat.emissiveIntensity = on ? 1.2 : 0.04;
-      this.lampGlowMat.color.setHex(on ? 0xeaf6fb : 0x5a6b75);
+      if (!on) this.lampGlowMat.color.setHex(this.skin.lampOff);
+      // 亮度/色温由已安装灯型决定（见 applyLightFixture）
+      this.applyLightFixture();
     }
     // 光照后植物呈现差异化：红宫廷(高草)开灯时叶色更红艳，关灯时黯淡偏绿；
     // 低光植物(水榕/莫丝/皇冠)变化小，仅整体略亮
@@ -289,12 +601,13 @@ export class Renderer {
   }
 
   // 取（或首次加载）环境背景纹理；view 缺省取正面图，否则取 `${id}_${view}.jpg`
+  // 图片按皮肤分目录：/backgrounds/ink/*.jpg、/backgrounds/cyber/*.jpg
   private getBackgroundTexture(id: string, view?: 'left' | 'right' | 'back'): THREE.Texture {
-    const key = view ? `${id}_${view}` : id;
+    const key = `${this.skin.id}/${view ? `${id}_${view}` : id}`;
     const cached = this.backgroundTextures.get(key);
     if (cached) return cached;
     const file = view ? `${id}_${view}.jpg` : `${id}.jpg`;
-    const texture = this.textureLoader.load(`/backgrounds/${file}`);
+    const texture = this.textureLoader.load(`/backgrounds/${this.skin.id}/${file}`);
     texture.colorSpace = THREE.SRGBColorSpace;
     this.backgroundTextures.set(key, texture);
     return texture;
@@ -303,6 +616,11 @@ export class Renderer {
   // 切换放置环境：重建背景墙与柜/台面，并更新场景背景色
   applyEnvironment(environmentId: string): void {
     const config: EnvironmentConfig = getEnvironment(environmentId);
+    this.environmentId = config.id;
+    // 换皮后同一房间的底色不同：暗调房间用 variants 里的暗色，否则会透出宣纸底
+    const variant = config.variants?.[this.skin.id];
+    const bgColor = variant?.background ?? config.background;
+    const wallTint = variant?.wallColor ?? config.wallColor;
     if (this.environmentGroup) {
       this.scene.remove(this.environmentGroup);
       this.environmentGroup.traverse((obj) => {
@@ -313,7 +631,11 @@ export class Renderer {
         if (mat) (Array.isArray(mat) ? mat : [mat]).forEach((m) => m.dispose());
       });
     }
-    this.scene.background = new THREE.Color(config.background);
+    this.scene.background = new THREE.Color(bgColor);
+    // 雾色与环境背景同步，保证远墙渐隐不露馅
+    if (this.scene.fog instanceof THREE.FogExp2) {
+      (this.scene.fog.color as THREE.Color).setHex(bgColor);
+    }
 
     const group = new THREE.Group();
 
@@ -331,7 +653,7 @@ export class Renderer {
       const m = new THREE.Mesh(
         new THREE.PlaneGeometry(width, WALL_H),
         new THREE.MeshStandardMaterial({
-          color: config.wallColor,
+          color: wallTint,
           map: this.getBackgroundTexture(config.id, view),
           roughness: 1,
         }),
@@ -348,14 +670,15 @@ export class Renderer {
     // 地板与天花板：防止俯仰到极限时看到房间外；地板用程序化木纹，避免侧后视角看到大片纯色
     const floor = new THREE.Mesh(
       new THREE.PlaneGeometry(HALF_W * 2, HALF_D * 2),
-      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.88, map: this.getFloorTexture() }),
+      new THREE.MeshStandardMaterial({ color: this.skin.floorTint, roughness: 0.88, map: this.getFloorTexture() }),
     );
     floor.rotation.x = -Math.PI / 2;
     floor.position.y = WALL_Y - WALL_H / 2;
+    floor.receiveShadow = true;
     group.add(floor);
     const ceiling = new THREE.Mesh(
       new THREE.PlaneGeometry(HALF_W * 2, HALF_D * 2),
-      new THREE.MeshStandardMaterial({ color: 0xe8eef1, roughness: 1 }),
+      new THREE.MeshStandardMaterial({ color: this.skin.ceiling, roughness: 1 }),
     );
     ceiling.rotation.x = Math.PI / 2;
     ceiling.position.y = WALL_Y + WALL_H / 2;
@@ -364,19 +687,27 @@ export class Renderer {
     // 鱼缸底柜：统一深色（与缸框同色系），作为鱼缸专用支架，不随环境变色，避免与背景图家具冲突
     const cabinet = new THREE.Mesh(
       new THREE.BoxGeometry(7.2, 2, 3.2),
-      new THREE.MeshStandardMaterial({ color: 0x35505f, roughness: 0.7, metalness: 0.1 }),
+      new THREE.MeshStandardMaterial({ color: this.skin.cabinet, roughness: 0.7, metalness: 0.1 }),
     );
     cabinet.position.set(0, -3.1, 0);
     group.add(cabinet);
     // 底柜顶部薄台面：略深，承托缸体
     const counter = new THREE.Mesh(
       new THREE.BoxGeometry(7.4, 0.12, 3.4),
-      new THREE.MeshStandardMaterial({ color: 0x2a414e, roughness: 0.6, metalness: 0.2 }),
+      new THREE.MeshStandardMaterial({ color: this.skin.counter, roughness: 0.6, metalness: 0.2 }),
     );
     counter.position.set(0, -2.05, 0);
     group.add(counter);
     this.environmentGroup = group;
     this.scene.add(group);
+    // 另一套皮肤的图已经没有任何材质引用（旧墙刚被拆掉），此时才释放。
+    // 不能提前释放——那样切换过程中旧墙会短暂失去贴图，画面比闪白更难看
+    const prefix = `${this.skin.id}/`;
+    this.backgroundTextures.forEach((tex, key) => {
+      if (key.startsWith(prefix)) return;
+      tex.dispose();
+      this.backgroundTextures.delete(key);
+    });
   }
 
   // 释放一个组内全部 geometry/material
@@ -399,40 +730,75 @@ export class Renderer {
 
   // 程序化浅木地板纹理：木条 + 细纹，零外部资源，按房间尺寸平铺
   private getFloorTexture(): THREE.Texture {
-    if (this.floorTexture) return this.floorTexture;
+    if (this.floorTexture && this.floorTextureTheme === this.skin.id) return this.floorTexture;
     const c = document.createElement('canvas');
     c.width = 256; c.height = 256;
     const ctx = c.getContext('2d')!;
-    ctx.fillStyle = '#ab9d8c';
+    ctx.fillStyle = this.skin.floorBase;
     ctx.fillRect(0, 0, 256, 256);
-    const plankH = 32;
-    for (let row = 0; row < 256 / plankH; row++) {
-      const y = row * plankH;
-      const tone = 176 + (row % 3) * 7;
-      ctx.fillStyle = `rgb(${tone}, ${tone - 14}, ${tone - 34})`;
-      ctx.fillRect(0, y + 1, 256, plankH - 2);
-      // 木条接缝
-      ctx.fillStyle = 'rgba(120, 96, 74, 0.30)';
-      ctx.fillRect(0, y, 256, 1);
-      // 逐条细木纹，长度错开，避免像规则条纹
-      for (let i = 0; i < 22; i++) {
-        const ly = y + 3 + Math.random() * (plankH - 6);
-        const lx = Math.random() * 256;
-        const len = 30 + Math.random() * 110;
-        ctx.strokeStyle = `rgba(146, 116, 88, ${0.08 + Math.random() * 0.10})`;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(lx, ly);
-        ctx.lineTo(lx + len, ly + (Math.random() - 0.5) * 1.6);
-        ctx.stroke();
+    const [br, bg, bb] = this.skin.floorTone;
+    const mix = (base: number, d: number) => Math.max(0, Math.min(255, Math.round(base + d)));
+
+    if (this.skin.floorKind === 'panel') {
+      // 金属板：先铺格子，每格亮度略有差异，再压一层扫描线，最后用亮线勾缝
+      const cell = 64;
+      for (let gy = 0; gy < 256 / cell; gy++) {
+        for (let gx = 0; gx < 256 / cell; gx++) {
+          const k = (Math.random() - 0.5) * 16;
+          ctx.fillStyle = `rgb(${mix(br, k)}, ${mix(bg, k)}, ${mix(bb, k)})`;
+          ctx.fillRect(gx * cell + 1, gy * cell + 1, cell - 2, cell - 2);
+          // 板面细划痕，避免每格纯色像棋盘
+          for (let i = 0; i < 5; i++) {
+            const ly = gy * cell + 6 + Math.random() * (cell - 12);
+            const lx = gx * cell + 4 + Math.random() * (cell - 20);
+            ctx.strokeStyle = `rgba(140, 200, 255, ${0.05 + Math.random() * 0.08})`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(lx, ly);
+            ctx.lineTo(lx + 6 + Math.random() * 22, ly);
+            ctx.stroke();
+          }
+        }
+      }
+      ctx.strokeStyle = this.skin.floorSeam;
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 256 / cell; i++) {
+        const p = i * cell + 0.5;
+        ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, 256); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(256, p); ctx.stroke();
+      }
+    } else {
+      const plankH = 32;
+      for (let row = 0; row < 256 / plankH; row++) {
+        const y = row * plankH;
+        const tone = (row % 3) * 7;
+        ctx.fillStyle = `rgb(${mix(br, tone)}, ${mix(bg, tone)}, ${mix(bb, tone)})`;
+        ctx.fillRect(0, y + 1, 256, plankH - 2);
+        // 木条接缝
+        ctx.fillStyle = this.skin.floorSeam;
+        ctx.fillRect(0, y, 256, 1);
+        // 逐条细木纹，长度错开，避免像规则条纹
+        for (let i = 0; i < 22; i++) {
+          const ly = y + 3 + Math.random() * (plankH - 6);
+          const lx = Math.random() * 256;
+          const len = 30 + Math.random() * 110;
+          ctx.strokeStyle = `rgba(146, 116, 88, ${0.08 + Math.random() * 0.1})`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(lx, ly);
+          ctx.lineTo(lx + len, ly + (Math.random() - 0.5) * 1.6);
+          ctx.stroke();
+        }
       }
     }
+
     const tex = new THREE.CanvasTexture(c);
     tex.wrapS = THREE.RepeatWrapping;
     tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(4, 4);
+    tex.repeat.set(this.skin.floorRepeat, this.skin.floorRepeat);
     tex.colorSpace = THREE.SRGBColorSpace;
     this.floorTexture = tex;
+    this.floorTextureTheme = this.skin.id;
     return tex;
   }
 
@@ -440,15 +806,35 @@ export class Renderer {
   private buildTank(spec: TankShapeSpec): void {
     const group = new THREE.Group();
     const glassMat = new THREE.MeshStandardMaterial({
-      color: 0xbfe8f5, transparent: true, opacity: 0.16, metalness: 0.1, roughness: 0.15,
+      color: this.skin.glass, transparent: true, opacity: this.skin.glassOpacity, metalness: 0.1, roughness: 0.15,
       side: THREE.DoubleSide, depthWrite: false, // 透明玻璃不写深度，避免剔除缸内光束等内部物体
     });
     const waterMat = new THREE.MeshStandardMaterial({
-      color: 0x57a8d0, transparent: true, opacity: 0.32, depthWrite: false,
+      // 水体透明度压低：过浓会让缸内所有东西糊成一片雾，装备和鱼都看不清
+      color: this.skin.water, transparent: true, opacity: this.skin.waterOpacity, depthWrite: false,
+      // 水面法线：让水体表面有随光线流动的细碎高光
+      normalMap: this.getWaterNormalTexture(),
+      normalScale: new THREE.Vector2(0.3, 0.3),
+      roughness: 0.35,
     });
-    const sandMat = new THREE.MeshStandardMaterial({ color: 0xd8c49a });
-    // 真实缸体的上下包边：深色细实体框，有厚度，替代不真实的线框
-    const frameMat = new THREE.MeshStandardMaterial({ color: 0x2f5d70, roughness: 0.5, metalness: 0.3 });
+    // 底砂：细沙颗粒纹理 + 焦散自发光（水面阳光在砂面的聚焦网）
+    const sandMat = new THREE.MeshStandardMaterial({
+      color: this.skin.sandColor,
+      map: this.getSandTexture(),
+      emissive: this.skin.sandEmissive,
+      emissiveIntensity: this.skin.sandEmissiveIntensity,
+      emissiveMap: this.getCausticsTexture(),
+      roughness: 0.9,
+    });
+    // 真实缸体的上下包边：深色细实体框，有厚度，替代不真实的线框。
+    // 赛博皮给框子一点自发光，Bloom 会把它描成一圈霓虹边；古风皮强度为 0，等于没变
+    const frameMat = new THREE.MeshStandardMaterial({
+      color: this.skin.frame,
+      emissive: this.skin.frame,
+      emissiveIntensity: this.skin.frameEmissive,
+      roughness: 0.5,
+      metalness: 0.3,
+    });
 
     if (spec.kind === 'box') {
       const { width, depth, height } = spec;
@@ -460,6 +846,7 @@ export class Renderer {
       group.add(waterMesh);
       const sandMesh = new THREE.Mesh(new THREE.BoxGeometry(width - 0.2, 0.35, depth - 0.2), sandMat);
       sandMesh.position.y = -1.75;
+      sandMesh.receiveShadow = true;
       group.add(sandMesh);
     } else {
       const { radius, height } = spec;
@@ -479,6 +866,7 @@ export class Renderer {
       group.add(waterMesh);
       const sandMesh = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.95, radius * 0.95, 0.35, 48), sandMat);
       sandMesh.position.y = -1.75;
+      sandMesh.receiveShadow = true;
       group.add(sandMesh);
     }
 
@@ -506,18 +894,23 @@ export class Renderer {
 
   // 切换鱼缸形状：重建缸体，更新游动边界，气泡按新边界重建
   applyTankShape(shapeId: string): void {
-    const spec = getTankShape(shapeId);
+    this.shapeSpec = getTankShape(shapeId);
+    this.motionBounds = this.toMotionBounds(this.shapeSpec);
+    this.rebuildTankAndLamp();
+  }
+
+  // 按当前 shapeSpec + skin 重建缸体与灯具，并把依附其上的气泡/水草/道具重新摆好。
+  // 换形状与换皮肤都要走这一套，抽出来避免两处漏步。
+  private rebuildTankAndLamp(): void {
     if (this.tankGroup) {
       this.scene.remove(this.tankGroup);
       this.disposeGroup(this.tankGroup);
     }
-    this.shapeSpec = spec;
-    this.motionBounds = this.toMotionBounds(spec);
-    this.buildTank(spec);
-    // 气泡与水草按新边界重建
-    const bubbleCounts: Record<string, number> = { high: 40, medium: 24, low: 12 };
-    this.createBubbles(bubbleCounts[this.quality]);
+    this.buildTank(this.shapeSpec);
+    // 气泡与水草按新边界重建，造景道具按新锚点重摆
+    this.createBubbles(QUALITY_PRESET[this.quality].bubbles);
     this.relayoutPlants();
+    this.syncProps();
     // 灯具按新形状尺寸重建，并恢复当前开关状态
     const wasLightOn = this.currentLightOn;
     if (this.lampGroup) {
@@ -529,6 +922,124 @@ export class Renderer {
     if (wasLightOn !== null) this.applyLightState(wasLightOn);
   }
 
+  // 运行时换皮肤：色值烤在材质里，凡是"带颜色建出来"的东西都得重建。
+  // 顺序是 先预载新皮房间图 → 改全局（灯光/雾/Bloom/纹理缓存）→ 重建实体（缸、灯、房间），
+  // 因为重建过程会从 this.skin 取色。
+  //
+  // 预载这一步是必要的：背景图是异步加载的，若直接重建墙面，图还没解码时
+  // 材质只剩 wallColor 兜底，深色房间会闪一下白墙。等图到位再换，切换就是干净的。
+  async setTheme(id: SceneSkin['id']): Promise<void> {
+    if (this.isDisposed) return;
+    const next = getSkin(id);
+    // 正在预载：只记下最后的目标，等这一轮结束再接着切
+    if (this.themeSwitching) {
+      this.pendingTheme = next.id;
+      return;
+    }
+    if (next.id === this.appliedTheme) return;
+    this.themeSwitching = true;
+    // 先切到新皮，让 getBackgroundTexture 指向新目录（此时还没重建任何实体，画面保持原样）
+    this.skin = next;
+    try {
+      await this.preloadBackgrounds();
+    } finally {
+      this.themeSwitching = false;
+    }
+    if (this.isDisposed) return;
+    // 预载失败也不影响后续：墙材质会先用 wallColor 兜底，图到了自动补上
+    if (this.skin === next) this.applySkinGlobals();
+    const queued = this.pendingTheme;
+    this.pendingTheme = null;
+    if (queued && queued !== this.appliedTheme) void this.setTheme(queued);
+  }
+
+  // 把四环境 × 四视图的背景图全部拉进缓存，等解码完成。
+  // 这里不走 TextureLoader：它返回的 Texture 要等 onload 才拿到图，墙会先闪一下兜底色。
+  // 自己 decode 完再手搓 Texture，就能保证换皮时贴图已经就位，切换是干净的。
+  private async preloadBackgrounds(): Promise<void> {
+    const views: Array<'left' | 'right' | 'back' | undefined> = [undefined, 'left', 'right', 'back'];
+    const jobs: Array<Promise<void>> = [];
+    for (const env of ENVIRONMENT_CATALOG) {
+      for (const view of views) {
+        const key = `${this.skin.id}/${view ? `${env.id}_${view}` : env.id}`;
+        const url = `/backgrounds/${this.skin.id}/${view ? `${env.id}_${view}` : env.id}.jpg`;
+        jobs.push((async () => {
+          try {
+            const img = new Image();
+            img.src = url;
+            await img.decode();
+            if (this.isDisposed) return;
+            const tex = new THREE.Texture(img);
+            tex.colorSpace = THREE.SRGBColorSpace;
+            tex.needsUpdate = true;
+            this.backgroundTextures.get(key)?.dispose();
+            this.backgroundTextures.set(key, tex);
+          } catch {
+            // 单张失败（文件缺失/解码失败）不拖垮整次切换，墙面会用 wallColor 兜底
+          }
+        })());
+      }
+    }
+    await Promise.all(jobs);
+  }
+
+  // 换皮的第二段：改全局参数并按新皮肤重建实体
+  private applySkinGlobals(): void {
+    const next = this.skin;
+
+    // 场景底与雾
+    this.scene.background = new THREE.Color(next.background);
+    if (this.scene.fog instanceof THREE.FogExp2) {
+      (this.scene.fog.color as THREE.Color).setHex(next.fogColor);
+      this.scene.fog.density = next.fogDensity;
+    } else {
+      this.scene.fog = new THREE.FogExp2(next.fogColor, next.fogDensity);
+    }
+    this.scene.environmentIntensity = next.environmentIntensity;
+
+    // 三盏灯只换色与强度，阴影贴图不用重算
+    if (this.ambientLight) {
+      this.ambientLight.color.setHex(next.ambientColor);
+      this.ambientLight.intensity = next.ambientIntensity;
+    }
+    if (this.keyLight) {
+      this.keyLight.color.setHex(next.keyColor);
+      this.keyLight.intensity = next.keyIntensity;
+    }
+    if (this.fillLight) {
+      this.fillLight.color.setHex(next.fillColor);
+      this.fillLight.intensity = next.fillIntensity;
+    }
+
+    // 泛光：赛博靠这一档把霓虹提亮，古风压到几乎不可见
+    this.bloomPass.strength = next.bloom.strength;
+    this.bloomPass.radius = next.bloom.radius;
+    this.bloomPass.threshold = next.bloom.threshold;
+
+    // 两张按皮肤生成的程序化纹理（地板、底砂）作废重做
+    this.floorTexture?.dispose();
+    this.floorTexture = null;
+    this.floorTextureTheme = '';
+    this.sandTexture?.dispose();
+    this.sandTexture = null;
+
+    // 带颜色的实体：缸体、水、底砂、缸框、灯具
+    this.rebuildTankAndLamp();
+    // 房间墙面/地板/天花/底柜，以及场景底色（按当前环境的皮肤变体）
+    this.applyEnvironment(this.environmentId);
+
+    // 选中光环是基础材质，改个色就行
+    if (this.selectionRing) {
+      (this.selectionRing.material as THREE.MeshBasicMaterial).color.setHex(next.accent);
+    }
+
+    this.appliedTheme = next.id;
+  }
+
+  getTheme(): SceneSkin['id'] {
+    return this.skin.id;
+  }
+
   // 释放一条鱼（占位 Mesh 或 glTF Group）占用的 GPU 资源
   private disposeFishObject(obj: THREE.Object3D): void {
     obj.traverse((child) => {
@@ -538,6 +1049,157 @@ export class Renderer {
         const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         materials.forEach((m) => m.dispose());
       }
+    });
+  }
+
+  // 给鱼的 mesh 注入摆尾顶点动画。旧实现有三个硬伤，这里一并修掉：
+  // 1) 整条尾巴同相位：所有顶点共用一个 sin 值，只是按权重缩放，等于一块硬板左右扫。
+  //    改成沿体轴的行波 —— 相位随 x 滞后，波峰才会由尾柄向尾尖传，鱼身呈 S 形。
+  // 2) 相位取自 modelMatrix 的世界坐标：鱼一游动相位就漂，摆尾节奏被自身位移随机调制，
+  //    看起来像抽搐而不是游动。改成每条鱼一个固定随机相位。
+  // 3) 频率全缸统一：悬停的鱼和急游的鱼同频。改成逐鱼 uniform，由个体实时游速驱动。
+  // 返回这条鱼的游泳画像，交给 update 每帧驱动；胸鳍不进顶点动画，改由 update 旋转。
+  applyFishWarp(obj: THREE.Object3D): SwimProfile {
+    // 体长必须实测：各鱼种模型尺寸差一倍以上（guppy 体长仅 0.6），
+    // 写死 0.2/-0.6 会让体型小的鱼尾部权重永远到不了 1，摆幅白白打个对折
+    const box = new THREE.Box3();
+    obj.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.isMesh || !mesh.geometry) return;
+      if (/eye|pec/i.test(mesh.name ?? '')) return;
+      mesh.geometry.computeBoundingBox();
+      if (mesh.geometry.boundingBox) box.union(mesh.geometry.boundingBox);
+    });
+    const bodyLength = Math.max(0.2, box.max.x - box.min.x);
+    const profile: SwimProfile = {
+      phase: Math.random() * Math.PI * 2,
+      freq: 5.4,
+      yaw: 0.26,
+      speed: 0.2,
+      bodyLength,
+      phaseUniform: { value: 0 },
+      uniforms: {
+        uSwimFreq: { value: 5.4 },
+        uSwimYaw: { value: 0.26 },
+        uTurnBend: { value: 0 },
+        uBodyMaxX: { value: box.max.x },
+        uBodyInvLen: { value: 1 / bodyLength },
+      },
+      pecs: [],
+    };
+    profile.phaseUniform.value = profile.phase;
+
+    // 同种鱼的模板 clone 共享材质，必须逐鱼复制，uniform 才不会串
+    const clonedMats = new Map<THREE.Material, THREE.Material>();
+    obj.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.isMesh || !mesh.material) return;
+      const name = mesh.name ?? '';
+      // 眼球跟着头走、胸鳍单独扇动，都不参与顶点形变
+      if (/eye/i.test(name)) return;
+      if (/pec/i.test(name)) {
+        profile.pecs.push({
+          obj: mesh,
+          baseY: mesh.rotation.y,
+          side: /_R$/i.test(name) ? -1 : 1,
+        });
+        return;
+      }
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      const next = mats.map((m) => {
+        const cached = clonedMats.get(m);
+        if (cached) return cached;
+        const cloned = m.clone();
+        clonedMats.set(m, cloned);
+        this.injectSwimWave(cloned as THREE.MeshStandardMaterial, profile);
+        return cloned;
+      });
+      mesh.material = Array.isArray(mesh.material) ? next : next[0];
+    });
+    return profile;
+  }
+
+  private injectSwimWave(mat: THREE.MeshStandardMaterial, profile: SwimProfile): void {
+    if (mat.userData.swimWarp) return;
+    mat.userData.swimWarp = true;
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uSwimTime = this.swimTime;
+      shader.uniforms.uSwimPhase = profile.phaseUniform;
+      shader.uniforms.uSwimFreq = profile.uniforms.uSwimFreq;
+      shader.uniforms.uSwimYaw = profile.uniforms.uSwimYaw;
+      shader.uniforms.uTurnBend = profile.uniforms.uTurnBend;
+      shader.uniforms.uBodyMaxX = profile.uniforms.uBodyMaxX;
+      shader.uniforms.uBodyInvLen = profile.uniforms.uBodyInvLen;
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+          uniform float uSwimTime;
+          uniform float uSwimPhase;
+          uniform float uSwimFreq;
+          uniform float uSwimYaw;
+          uniform float uTurnBend;
+          uniform float uBodyMaxX;
+          uniform float uBodyInvLen;`,
+        )
+        .replace(
+          '#include <begin_vertex>',
+          `#include <begin_vertex>
+          {
+            // 体轴归一化：吻端 0 → 尾尖 1（按模型实测包围盒，不写死坐标）
+            float t = clamp((uBodyMaxX - position.x) * uBodyInvLen, 0.0, 1.0);
+            // 行波：相位沿体轴滞后，波峰由头向尾传，鱼身才会呈 S 形而不是整体平移
+            float ang = uSwimTime * uSwimFreq - uSwimPhase - t * 3.4;
+            // 摆角向尾部集中，头颈保持稳定
+            float w = pow(t, 1.6);
+            // 绕头部竖直轴偏转，而不是沿 z 轴平移：
+            // 平移在大多数视角下都是朝向/远离相机的，屏幕上根本看不出来；
+            // 摆尾真正的读感来自尾鳍朝向的变化（投影变窄 + 轮廓摆动）
+            float yaw = sin(ang) * uSwimYaw * w + uTurnBend * w;
+            float c = cos(yaw);
+            float s = sin(yaw);
+            float dx = transformed.x - uBodyMaxX;
+            transformed.x = uBodyMaxX + dx * c - transformed.z * s;
+            transformed.z = dx * s + transformed.z * c;
+          }`,
+        );
+    };
+  }
+
+  // 给水草注入摆动顶点动画：越靠叶尖（本地 y 越高）摆幅越大，
+  // 用世界位置做每株独立相位；CPU 侧 rotation 摆动整体太"板"，换成顶点级
+  applyPlantSway(obj: THREE.Object3D): void {
+    obj.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.material) return;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      mats.forEach((m) => {
+        const mat = m as THREE.MeshStandardMaterial;
+        if (mat.userData.swayInjected) return;
+        mat.userData.swayInjected = true;
+        mat.onBeforeCompile = (shader) => {
+          shader.uniforms.uSwimTime = this.swimTime;
+          shader.vertexShader = shader.vertexShader
+            .replace(
+              '#include <common>',
+              `#include <common>
+              uniform float uSwimTime;`,
+            )
+            .replace(
+              '#include <begin_vertex>',
+              `#include <begin_vertex>
+              {
+                // 高度权重：贴地 0 → 顶部 1
+                float hW = clamp(position.y, 0.0, 1.0);
+                float phase = modelMatrix[3][0] * 2.3 + modelMatrix[3][2] * 1.7;
+                float slow = sin(uSwimTime * 0.9 + phase);
+                float fine = sin(uSwimTime * 1.7 + phase * 1.3) * 0.35;
+                transformed.x += (slow + fine) * 0.045 * hW * hW;
+                transformed.z += cos(uSwimTime * 0.7 + phase) * 0.02 * hW;
+              }`,
+            );
+        };
+      });
     });
   }
 
@@ -559,24 +1221,34 @@ export class Renderer {
   // 造一条鱼：优先按鱼种 glb 模板克隆，其次单模板，否则锥体占位；稀有品系用专属颜色
   private createFishMesh(i: number, specId: string, variant: string): THREE.Object3D {
     const rare = variant === COMMON_VARIANT ? undefined : getRareVariant(specId, variant);
+    let obj: THREE.Object3D;
     const typed = this.fishTemplates.get(specId);
     if (typed) {
-      const obj = typed.clone(true);
+      obj = typed.clone(true);
       if (rare) this.applyVariantTint(obj, rare.color);
-      return obj;
-    }
-    if (this.fishTemplate) {
-      const obj = this.fishTemplate.clone(true);
+    } else if (this.fishTemplate) {
+      obj = this.fishTemplate.clone(true);
       if (rare) this.applyVariantTint(obj, rare.color);
-      return obj;
+    } else {
+      const palette = this.skin.fishFallback;
+      const color = rare ? rare.color : palette[i % palette.length];
+      const geometry = new THREE.ConeGeometry(0.18, 0.6, 8);
+      // 朝向烘焙进几何体：update 每帧覆写 rotation.x/z（俯仰/侧倾），不能再依赖 mesh.rotation.z
+      geometry.rotateZ(Math.PI / 2);
+      obj = new THREE.Mesh(
+        geometry,
+        new THREE.MeshStandardMaterial({ color }),
+      );
     }
-    const color = rare ? rare.color : FISH_COLORS[i % FISH_COLORS.length];
-    const mesh = new THREE.Mesh(
-      new THREE.ConeGeometry(0.18, 0.6, 8),
-      new THREE.MeshStandardMaterial({ color }),
-    );
-    mesh.rotation.z = Math.PI / 2;
-    return mesh;
+    // 摆尾顶点动画（放在换色之后，确保注入的是最终材质）；鱼在砂面上投下软阴影
+    obj.userData.swim = this.applyFishWarp(obj);
+    obj.traverse((child) => {
+      const m = child as THREE.Mesh;
+      if (m.isMesh) m.castShadow = true;
+    });
+    // 欧拉序 YXZ：俯仰(z)/侧倾(x)在偏航(y)之前应用，侧倾才绕鱼自身前进轴
+    obj.rotation.order = 'YXZ';
+    return obj;
   }
 
   private syncFish(snapshot: Snapshot): void {
@@ -588,6 +1260,8 @@ export class Renderer {
         this.disposeFishObject(mesh);
         this.fishMeshes.delete(id);
         this.fishMotion.delete(id);
+        this.fishSwim.delete(id);
+        this.fishPose.delete(id);
       }
     }
     // 新增鱼
@@ -597,6 +1271,8 @@ export class Renderer {
         this.scene.add(mesh);
         this.fishMeshes.set(f.id, mesh);
         this.fishMotion.set(f.id, createMotionState(f.specId, Math.random, this.motionBounds));
+        const swim = mesh.userData.swim as SwimProfile | undefined;
+        if (swim) this.fishSwim.set(f.id, swim);
       }
     });
   }
@@ -608,17 +1284,20 @@ export class Renderer {
     if (template) {
       const cloned = template.clone(true);
       cloned.userData.specId = specId;
+      this.applyPlantSway(cloned);
       return cloned;
     }
     const geometry = new THREE.ConeGeometry(0.12, 0.8, 6);
     geometry.translate(0, 0.4, 0);
-    return new THREE.Mesh(
+    const mesh = new THREE.Mesh(
       geometry,
       new THREE.MeshStandardMaterial({
-        color: PLANT_GREENS[fallbackIndex % PLANT_GREENS.length],
+        color: this.skin.plantFallback[fallbackIndex % this.skin.plantFallback.length],
         roughness: 0.8,
       }),
     );
+    this.applyPlantSway(mesh);
+    return mesh;
   }
 
   private syncPlant(snapshot: Snapshot): void {
@@ -690,6 +1369,8 @@ export class Renderer {
       }
       this.scene.add(fresh);
       this.fishMeshes.set(id, fresh);
+      const swim = fresh.userData.swim as SwimProfile | undefined;
+      if (swim) this.fishSwim.set(id, swim);
     }
   }
 
@@ -788,16 +1469,85 @@ export class Renderer {
     return Object.fromEntries(this.iconCache);
   }
 
-  // 已安装装备的缸内/缸外实体：按类型定锚点，模型复用商店同一套 glb；
-  // 灯光类由既有灯盘与光束承担，不重复摆放
+  // 加载造景道具（岩石/沉木）并按当前缸形摆放；形状切换时重摆
+  async loadProps(specIds: string[]): Promise<{ loaded: string[]; failed: string[] }> {
+    const loaded: string[] = [];
+    const failed: string[] = [];
+    await Promise.all(
+      specIds.map(async (specId) => {
+        if (this.propTemplates.has(specId)) {
+          loaded.push(specId);
+          return;
+        }
+        try {
+          const result = await loadModel(`/models/props/${specId}.glb`);
+          if (this.isDisposed) return;
+          this.propTemplates.set(specId, result.group);
+          loaded.push(specId);
+        } catch {
+          failed.push(specId);
+        }
+      }),
+    );
+    if (!this.isDisposed) this.syncProps();
+    return { loaded: loaded.sort(), failed: failed.sort() };
+  }
+
+  // 造景道具摆放锚点：石头群落在左后方，沉木在右后方，避开植物区
+  private propAnchor(specId: string): { x: number; z: number; y: number; scale: number; rotY: number } {
+    const hx = this.motionBounds.halfX;
+    const hz = this.motionBounds.halfZ;
+    switch (specId) {
+      case 'rock-a':
+        return { x: -hx * 0.58, z: -hz * 0.52, y: -1.2, scale: 0.68, rotY: 0.7 };
+      case 'rock-b':
+        return { x: -hx * 0.38, z: -hz * 0.2, y: -1.35, scale: 0.4, rotY: 2.1 };
+      case 'rock-c':
+        return { x: -hx * 0.66, z: -hz * 0.18, y: -1.25, scale: 0.82, rotY: 4.4 };
+      case 'driftwood':
+        return { x: hx * 0.42, z: -hz * 0.38, y: -1.4, scale: 0.9, rotY: -0.4 };
+      default:
+        return { x: 0, z: 0, y: -1.4, scale: 1, rotY: 0 };
+    }
+  }
+
+  // 按模板重建缸内造景组；形状切换后重新计算锚点
+  private syncProps(): void {
+    if (this.propGroup) {
+      this.scene.remove(this.propGroup);
+      // 几何/材质与模板共享，clone 的实体不释放共享资源
+    }
+    if (this.propTemplates.size === 0) return;
+    const group = new THREE.Group();
+    this.propTemplates.forEach((template, specId) => {
+      const mesh = template.clone(true);
+      const a = this.propAnchor(specId);
+      mesh.position.set(a.x, a.y, a.z);
+      mesh.scale.setScalar(a.scale);
+      mesh.rotation.y = a.rotY;
+      mesh.traverse((child) => {
+        const m = child as THREE.Mesh;
+        if (m.isMesh) m.castShadow = true;
+      });
+      group.add(mesh);
+    });
+    this.propGroup = group;
+    this.scene.add(group);
+  }
+
+  // 已安装装备的缸内/缸外实体：按类型定锚点，模型复用商店同一套 glb。
+  // 锚点原则：缸内设备贴壁下水、缸外设备落在底柜台面（不是地面），保证镜头里一定看得见
   private syncEquipment(snapshot: Snapshot): void {
     const specById = new Map(EQUIPMENT_CATALOG.map((e) => [e.id, e]));
     const wanted = new Map<string, string>(); // specId -> type
     Object.values(snapshot.installed).forEach((specId) => {
       const spec = specById.get(specId);
+      // 灯具不摆实体（缸上已有灯盘），改为让灯盘亮度/色温随灯型变化
       if (spec && spec.type !== 'light') wanted.set(specId, spec.type);
     });
     this.co2Installed = [...wanted.values()].includes('co2');
+    this.installedLightId = snapshot.installed.light ?? null;
+    this.applyLightFixture();
     for (const [specId, mesh] of this.equipmentMeshes) {
       if (!wanted.has(specId)) {
         this.scene.remove(mesh);
@@ -819,33 +1569,51 @@ export class Renderer {
     }
   }
 
-  // 装备摆放锚点：加热棒在缸内后侧、壁挂过滤贴左侧内壁、外置滤桶与 CO2 在缸外
+  // 装备摆放锚点：缸内设备贴壁下水，缸外设备落在底柜台面（台面约 y=-2.05），
+  // 保证正视角下都能看到，不会掉到画面外或埋进柜体
   private equipmentAnchor(
     type: string,
     specId: string,
   ): { x: number; y: number; z: number; scale: number; rotY: number } {
     const hx = this.motionBounds.halfX;
     const hz = this.motionBounds.halfZ;
+    const STAND_Y = -2.05; // 底柜台面高度
+    const SAND_Y = -1.55; // 砂面高度
     if (type === 'heater') {
-      return { x: hx * 0.74, y: -1.55, z: -hz * 0.66, scale: 1.0, rotY: 0 };
+      // 加热棒：缸内右后角，竖立在砂面上，贴近后壁
+      return { x: hx * 0.72, y: SAND_Y, z: -hz * 0.62, scale: 0.82, rotY: 0.3 };
     }
     if (type === 'filter') {
       if (specId === 'filter-canister') {
-        // 外置滤桶：缸外左侧落地
-        return { x: -(hx + 1.15), y: -5, z: 0.2, scale: 1.0, rotY: 0.25 };
+        // 外置滤桶：缸外右侧台面
+        return { x: hx + 0.55, y: STAND_Y, z: -0.1, scale: 0.9, rotY: 0.3 };
       }
       if (specId === 'filter-sump') {
-        // 底滤槽：底柜前缘地面，正视图能看见
-        return { x: 0, y: -5, z: 1.72, scale: 0.85, rotY: 0 };
+        // 底滤槽：缸前下方台面，压扁一点避免挡住缸体下缘
+        return { x: -hx * 0.45, y: STAND_Y, z: hz + 0.55, scale: 0.55, rotY: 0.1 };
       }
-      // 壁挂过滤：挂在后壁偏右，正面朝观众，形态一眼可辨
-      return { x: hx * 0.5, y: -0.55, z: -hz * 0.92, scale: 1.0, rotY: 0 };
+      // 壁挂过滤：挂在缸内右后壁上，正面朝观众
+      return { x: hx * 0.78, y: -0.5, z: -hz * 0.9, scale: 0.9, rotY: 0 };
     }
     if (type === 'co2') {
-      // CO2 钢瓶：台面上缸体右侧
-      return { x: hx + 0.95, y: -2.04, z: 0.1, scale: 1.05, rotY: -0.3 };
+      // CO2 钢瓶：缸外右侧台面，靠前一点
+      return { x: hx + 0.45, y: STAND_Y, z: 0.75, scale: 0.85, rotY: -0.2 };
     }
-    return { x: 0, y: -2.04, z: 0, scale: 1, rotY: 0 };
+    return { x: 0, y: STAND_Y, z: 0, scale: 1, rotY: 0 };
+  }
+
+  // 灯盘随已安装灯型变化：造景灯更亮更冷白，普通灯略暖；关灯时都变暗
+  private applyLightFixture(): void {
+    if (!this.lampGlowMat) return;
+    if (!this.currentLightOn) {
+      this.lampGlowMat.emissiveIntensity = 0.04;
+      return;
+    }
+    const isPlant = this.installedLightId === 'light-plant';
+    // 原来两种灯用两个几乎同色的白（0xeaf7ff / 0xeaf6fb），差别只在亮度；
+    // 现在统一取皮肤色，靠 emissiveIntensity 区分亮度就够了
+    this.lampGlowMat.emissiveIntensity = isPlant ? 2.0 : this.installedLightId ? 1.5 : 1.2;
+    this.lampGlowMat.color.setHex(this.skin.lampGlow);
   }
 
   // 用当前模板重建现有水草，保留砂面位置
@@ -896,12 +1664,30 @@ export class Renderer {
     this.prevElapsed = elapsed;
     const speedByBehavior = { normal: 1, anxious: 2.2, hiding: 0.3, sick: 0.5 };
     const timeSeconds = elapsed / 1000;
+    // 摆尾/摆草共用一根时间轴。频率不再乘全缸的 swimScale ——
+    // 每条鱼的摆尾频率由它自己的游速决定（见下方 swim profile），
+    // 再乘一次全局系数就成了双重调制。
+    this.swimTime.value += dt;
+    // 焦散与水面法线缓慢流动：两张纹理反向漂移，避免同步运动的假感
+    if (this.causticsTexture) {
+      this.causticsTexture.offset.x = timeSeconds * 0.015;
+      this.causticsTexture.offset.y = timeSeconds * 0.008;
+    }
+    if (this.waterNormalTexture) {
+      this.waterNormalTexture.offset.x = timeSeconds * 0.02;
+      this.waterNormalTexture.offset.y = -timeSeconds * 0.012;
+    }
     snapshot.fishes.forEach((f) => {
       const mesh = this.fishMeshes.get(f.id)!;
+      const prev = this.fishMotion.get(f.id)!;
+      // 冲刺—滑行节奏：真小鱼是摆尾几下加速、然后收尾滑行，不是匀速巡航。
+      // 匀速平移是"呆板"的主要来源之一，这一层几乎免费——摆尾频率本来就跟游速走。
+      // seed 本身就是每条鱼各自的随机相位，直接拿来错开节奏，整缸不会同步起伏
+      const dart = 0.55 + 0.75 * Math.pow(0.5 + 0.5 * Math.sin(timeSeconds * 0.31 + prev.seed), 1.6);
       const next = updateMotion({
-        state: this.fishMotion.get(f.id)!,
+        state: prev,
         specId: f.specId,
-        behaviorSpeed: speedByBehavior[f.behavior],
+        behaviorSpeed: speedByBehavior[f.behavior] * dart,
         dt,
         time: timeSeconds,
         rand: Math.random,
@@ -910,9 +1696,51 @@ export class Renderer {
       this.fishMotion.set(f.id, next);
       mesh.position.set(next.x, next.y, next.z);
       mesh.rotation.y = next.heading;
+      // 俯仰/侧倾都做低通平滑：直接取每帧位移差会带进随机噪声，鱼身会逐帧抖
+      const vy = dt > 1e-6 ? (next.y - prev.y) / dt : 0;
+      const pitchTarget = Math.max(-0.25, Math.min(0.25, vy * 0.45));
+      // 侧倾系数刻意压小：转向时的内倾是细节，幅度大了鱼会像一直歪着身子
+      const rollTarget = Math.max(-0.22, Math.min(0.22, -next.turnRate * 0.14));
+      const pose = this.fishPose.get(f.id) ?? { pitch: 0, roll: 0 };
+      const k = Math.min(1, 5 * dt);
+      pose.pitch += (pitchTarget - pose.pitch) * k;
+      pose.roll += (rollTarget - pose.roll) * k;
+      // 欧拉序改为 YXZ：先俯仰/侧倾再偏航，侧倾才绕鱼自身前进轴，不会随航向乱转
+      mesh.rotation.z = pose.pitch;
+      mesh.rotation.x = pose.roll;
+      this.fishPose.set(f.id, pose);
+
+      // 摆尾：频率与振幅跟着这条鱼自己的游速走 —— 悬停时慢摆、急游时快摆，
+      // 这是"活"的一半来源。全缸统一频率会让所有鱼像同一个发条带动的。
+      const swim = this.fishSwim.get(f.id);
+      if (swim) {
+        const inst = dt > 1e-6 ? Math.hypot(next.x - prev.x, next.z - prev.z) / dt : 0;
+        swim.speed += (inst - swim.speed) * Math.min(1, 3 * dt);
+        const targetFreq = 3.8 + swim.speed * 15;
+        swim.freq += (targetFreq - swim.freq) * Math.min(1, 2.5 * dt);
+        swim.uniforms.uSwimFreq.value = swim.freq;
+        // 偏转角随游速增大：悬停约 10°，急游到 30° 左右。
+        // 折算成横向摆幅约为体长的 10%~30%，低于 10% 在正常镜头距离上读不出来
+        swim.yaw = 0.18 + swim.speed * 0.25;
+        swim.uniforms.uSwimYaw.value = swim.yaw;
+        // 头部随摆尾轻微左右摆：正面视角下摆尾是深度方向的，真正让鱼"活"的
+        // 是这几度的头部偏摆
+        const headSway = Math.sin(timeSeconds * swim.freq - swim.phase) * 0.085;
+        mesh.rotation.y = next.heading + headSway;
+        // 转弯时身体弯成弧。做低通：直接取 turnRate 会在贴边转向时一步顶到限幅，
+        // 鱼身像被折断；平滑后是一段渐进的弧
+        const bendTarget = Math.max(-0.16, Math.min(0.16, -next.turnRate * 0.07));
+        swim.uniforms.uTurnBend.value += (bendTarget - swim.uniforms.uTurnBend.value) * Math.min(1, 3 * dt);
+        // 胸鳍绕根部扇动：左右反相，频率略慢于摆尾，悬停时才有"扑扇"的读感
+        for (const pec of swim.pecs) {
+          const pecPhase = timeSeconds * swim.freq * 0.9 + swim.phase + (pec.side > 0 ? 0 : Math.PI);
+          pec.obj.rotation.y = pec.baseY + Math.sin(pecPhase) * 0.38;
+        }
+      }
     });
     // 水草随引擎 size 缩放，体现生长：幼苗到成熟按 size/maxSize 比例，再乘成熟视觉高度
     // 视觉比例做下限重映射（幼苗 0.2 → 视觉 0.66），新种下就能看清，成熟后仍是明显长大
+    // 摆动已由 applyPlantSway 注入的顶点动画承担（叶尖摆、根部稳），不再做 CPU 整体旋转
     snapshot.plants.forEach((p) => {
       const mesh = this.plantMeshes.get(p.id);
       if (!mesh) return;
@@ -921,15 +1749,6 @@ export class Renderer {
       const growRatio = spec ? p.size / spec.maxSize : p.size;
       const visualRatio = 0.66 + 0.34 * Math.max(0, Math.min(1, (growRatio - 0.2) / 0.8));
       mesh.scale.setScalar(visualRatio * matureHeight);
-      // 水流摆动：两层正弦叠加，模拟水流的缓流+细浪，避免单一正弦的机械感
-      const sway = this.plantSway[p.specId] ?? { amp: 0.01, freq: 0.1 };
-      const phase = p.id.charCodeAt(p.id.length - 1) * 0.7;
-      const t = elapsed / 1000;
-      // 主摆动：慢而柔和；次摆动：频率略高、振幅更小，像细流扰动
-      const primary = Math.sin(t * sway.freq * 2 * Math.PI + phase);
-      const secondary = Math.sin(t * sway.freq * 2 * 1.7 * Math.PI + phase * 1.3) * 0.35;
-      mesh.rotation.z = (primary + secondary) * sway.amp;
-      mesh.rotation.x = Math.cos(t * sway.freq * 2 * 0.7 * Math.PI + phase) * sway.amp * 0.5;
     });
 
     // 气泡匀速上升、轻微左右飘，到水面后从底部重新升起
@@ -962,8 +1781,64 @@ export class Renderer {
     }
     // 光束保持静止，避免旋转造成底部边缘闪烁
 
+    // 选中标记环贴着选中的鱼游动，位于其正下方砂面上方一点
+    if (this.selectionRing) {
+      if (this.selectedFishId) {
+        const mesh = this.fishMeshes.get(this.selectedFishId);
+        if (mesh) {
+          this.selectionRing.visible = true;
+          this.selectionRing.position.set(mesh.position.x, -1.62, mesh.position.z);
+        } else {
+          this.selectionRing.visible = false;
+        }
+      } else {
+        this.selectionRing.visible = false;
+      }
+    }
+
     this.cameraController.update(elapsed);
-    this.renderer.render(this.scene, this.camera);
+    // 后期管线渲染（Bloom + 输出色调映射），取代直接 renderer.render
+    this.composer.render();
+  }
+
+  // 点击拾取：从 canvas 像素坐标发射射线，返回命中的鱼 id（未命中返回 null）
+  pickFish(clientX: number, clientY: number): string | null {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const meshes = [...this.fishMeshes.values()];
+    const hits = this.raycaster.intersectObjects(meshes, true);
+    if (hits.length === 0) return null;
+    // 命中的子网格向上回溯到注册的鱼根节点
+    for (let o: THREE.Object3D | null = hits[0].object; o; o = o.parent) {
+      for (const [id, mesh] of this.fishMeshes) {
+        if (mesh === o) return id;
+      }
+    }
+    return null;
+  }
+
+  // 选中/取消选中一条鱼：青色圆环贴在鱼下方水面高度；传 null 取消
+  setSelectedFish(fishId: string | null): void {
+    this.selectedFishId = fishId;
+    if (!fishId) {
+      if (this.selectionRing) this.selectionRing.visible = false;
+      return;
+    }
+    if (!this.selectionRing) {
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(0.32, 0.025, 8, 48),
+        new THREE.MeshBasicMaterial({ color: this.skin.accent, transparent: true, opacity: 0.85 }),
+      );
+      ring.rotation.x = -Math.PI / 2;
+      ring.visible = false;
+      this.selectionRing = ring;
+      this.scene.add(ring);
+    }
+    this.selectionRing.visible = true;
   }
 
   start(onFrame: (dt: number) => void): void {
@@ -972,8 +1847,9 @@ export class Renderer {
       const dt = Math.min(0.1, (now - last) / 1000);
       last = now;
       onFrame(dt);
-      // 采样 FPS，低于阈值自动降档（带滞后，避免频繁切换）
-      if (this.monitor.sample(now)) {
+      // 采样始终推进；用户手动选档后不再自动干预
+      const reported = this.monitor.sample(now);
+      if (reported && this.autoQuality) {
         const next = tierFromFps(this.monitor.fps, this.quality);
         if (next !== this.quality) this.setQuality(next);
       }
@@ -982,13 +1858,15 @@ export class Renderer {
     this.raf = requestAnimationFrame(loop);
   }
 
-  // 切换画质档位：调整像素比上限，低档降低渲染分辨率与气泡数量
-  setQuality(tier: QualityTier): void {
+  // 切换画质档位：调整像素比上限，低档关闭后期（Bloom）并降低渲染分辨率与气泡数量。
+  // byUser 为 true 时关闭自动调档，避免手动选择被下一帧覆盖。
+  setQuality(tier: QualityTier, byUser = false): void {
+    if (byUser) this.autoQuality = false;
     this.quality = tier;
     const preset = QUALITY_PRESET[tier];
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, preset.maxPixelRatio));
-    const bubbleCounts: Record<QualityTier, number> = { high: 40, medium: 24, low: 12 };
-    this.createBubbles(bubbleCounts[tier]);
+    this.bloomPass.enabled = preset.postProcessing;
+    this.createBubbles(preset.bubbles);
     this.resize();
   }
 
@@ -1006,6 +1884,9 @@ export class Renderer {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
+    // 后期合成器与渲染目标同步分辨率与像素比
+    this.composer.setPixelRatio(Math.min(window.devicePixelRatio, QUALITY_PRESET[this.quality].maxPixelRatio));
+    this.composer.setSize(w, h);
   }
 
   dispose(): void {
@@ -1035,6 +1916,9 @@ export class Renderer {
     this.plantTemplates.clear();
     this.equipmentTemplates.forEach((tpl) => this.disposeFishObject(tpl));
     this.equipmentTemplates.clear();
+    this.propTemplates.forEach((tpl) => this.disposeFishObject(tpl));
+    this.propTemplates.clear();
+    this.propGroup = null;
     this.iconRenderer?.dispose();
     this.iconRenderer = null;
     this.iconCache.clear();
@@ -1044,8 +1928,14 @@ export class Renderer {
     // 纹理被材质引用，需单独释放；背景纹理缓存统一释放
     this.bubbleTexture?.dispose();
     this.shaftTexture?.dispose();
+    this.causticsTexture?.dispose();
+    this.waterNormalTexture?.dispose();
+    this.sandTexture?.dispose();
     this.backgroundTextures.forEach((tex) => tex.dispose());
     this.backgroundTextures.clear();
+    // 后期合成器与 PBR 环境贴图
+    this.composer.dispose();
+    this.envTexture?.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }

@@ -3,6 +3,18 @@
 状态：评审中
 最后更新：2026-11-05
 
+> 实现对照（2026-11-10）：本文为设计稿，下表列出当前实现的差异，以源码为准。
+>
+> | 设计 | 当前实现 |
+> |---|---|
+> | `gameTime += TICK * TIME_SCALE` | `gameTime += TICK_SECONDS`，时间压缩体现在每帧 tick 数 |
+> | 离线走大步长批量积分 + 事件抽样 | `fastForward` 逐 tick 重放，事件去重后作为摘要 |
+> | V1 不做繁殖、V2 才加水草吸收 | 繁殖选育、稀有品系、水草 / CO2 / 藻类 / pH 均已实现 |
+> | 速率常数集中在 shared/balance 配置表 | `constants.ts` 只集中了一部分，其余阈值与系数散落在各模块 |
+> | 结构化 DomainEvent（FishAdded 等） | 字符串事件队列，`peek` 读快照、`drainEvents` 统一消费 |
+> | 每 N tick 输出不可变快照供 Zustand 订阅 | UI 按 0.25 / 0.5 秒主动取快照 |
+> | 轻量 Entity + 组件表 | 闭包式 `createEngine`，状态按类型分数组持有 |
+
 ## 一、时间模型
 
 ### 固定步长 + 累加器

@@ -27,5 +27,12 @@ Thumbs.db
 *.local
 .creds/
 
+# vite config temp backups
+vite.config.ts.timestamp-*.mjs
+
+# tool local state
+.workbuddy/
+_tmp_*
+
 # typescript build info
 tsconfig.tsbuildinfo

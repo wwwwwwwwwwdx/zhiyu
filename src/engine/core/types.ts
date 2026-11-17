@@ -209,6 +209,10 @@ export interface Engine {
   purchaseProduct(productId: string, gateway: PaymentGateway): Promise<CommandResult>;
   advance(realDtSeconds: number): Snapshot;
   getSnapshot(): Snapshot;
+  // 消费一次待展示事件；事件只在 UI 刷新点统一取出，读快照不会清空事件
+  drainEvents(): string[];
   fastForward(gameSeconds: number): OfflineResult;
+  // 分批推演并在批次间让出主线程，数值结果与同步版一致，供前台离线回归使用
+  fastForwardAsync(gameSeconds: number, yieldFn?: () => Promise<void>): Promise<OfflineResult>;
   getPersistedState(savedAt: number): PersistedState;
 }

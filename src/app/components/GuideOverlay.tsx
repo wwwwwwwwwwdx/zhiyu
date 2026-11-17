@@ -72,7 +72,7 @@ export default function GuideOverlay({ engine, snapshot, onChanged }: Props) {
   return (
     <>
       <style>{`
-        .guide-highlight { outline: 2px solid var(--ocean-500); outline-offset: 3px; box-shadow: 0 0 14px rgba(58,155,189,0.55); border-radius: 14px; }
+        .guide-highlight { outline: 2px solid var(--jade-500); outline-offset: 3px; box-shadow: 0 0 14px rgba(95,133,116,0.5); border-radius: 14px; }
       `}</style>
       <div
         className="glass"
@@ -92,7 +92,7 @@ export default function GuideOverlay({ engine, snapshot, onChanged }: Props) {
           {[0, 1, 2, 3, 4].map((i) => (
             <span
               key={i}
-              style={{ width: 18, height: 3, borderRadius: 2, background: i <= step ? 'var(--ocean-500)' : 'rgba(84,120,138,0.22)' }}
+              style={{ width: 18, height: 3, borderRadius: 2, background: i <= step ? 'var(--jade-500)' : 'rgba(74,66,48,0.2)' }}
             />
           ))}
         </div>

@@ -27,6 +27,9 @@ export interface MotionState {
   z: number;
   heading: number;
   seed: number;
+  // 平滑后的转向角速度（弧度/秒）：用于渲染层侧倾，直接取每帧航向差会带入
+  // 随机转向的白噪声，导致鱼身逐帧抖动
+  turnRate: number;
 }
 
 // 默认长方缸边界（等价历史写死值，砂面约 -1.575）
@@ -37,22 +40,29 @@ export const DEFAULT_MOTION_BOUNDS: MotionBounds = {
 export const TANK_MOTION_BOUNDS = DEFAULT_MOTION_BOUNDS;
 
 // 鱼种运动配置：反映真实习性差异
+// yRange 是垂直起伏的单边幅度：真鱼以水平巡游为主，上下只是小幅起伏，
+// 幅度过大会变成"电梯式直上直下"，这里统一收到体长的量级
 export const FISH_MOTION_CONFIG: Record<string, MotionConfig> = {
   // 卵胎生鳉鱼：偏上层、灵动
-  guppy: { waterLevel: 'top', centerY: 0.7, yRange: 0.45, speed: 1.1, turn: 1.2 },
-  mickey: { waterLevel: 'top', centerY: 0.6, yRange: 0.45, speed: 1.0, turn: 1.1 },
-  molly: { waterLevel: 'top', centerY: 0.3, yRange: 0.55, speed: 0.9, turn: 1.0 },
+  guppy: { waterLevel: 'top', centerY: 0.7, yRange: 0.2, speed: 1.1, turn: 1.2 },
+  mickey: { waterLevel: 'top', centerY: 0.6, yRange: 0.2, speed: 1.0, turn: 1.1 },
+  molly: { waterLevel: 'top', centerY: 0.3, yRange: 0.24, speed: 0.9, turn: 1.0 },
   // 灯鱼：中层群游，转向平稳
-  neon: { waterLevel: 'mid', centerY: -0.2, yRange: 0.55, speed: 1.0, turn: 0.8 },
-  cardinal: { waterLevel: 'mid', centerY: -0.2, yRange: 0.5, speed: 0.9, turn: 0.7 },
-  zebra: { waterLevel: 'mid', centerY: -0.1, yRange: 0.6, speed: 1.5, turn: 1.4 },
-  'tiger-barb': { waterLevel: 'mid', centerY: -0.2, yRange: 0.6, speed: 1.4, turn: 1.3 },
-  // 神仙鱼：缓慢优雅，垂直上下游动幅度大
-  angelfish: { waterLevel: 'mid', centerY: -0.2, yRange: 1.0, speed: 0.6, turn: 0.6 },
+  neon: { waterLevel: 'mid', centerY: -0.2, yRange: 0.22, speed: 1.0, turn: 0.8 },
+  cardinal: { waterLevel: 'mid', centerY: -0.2, yRange: 0.2, speed: 0.9, turn: 0.7 },
+  zebra: { waterLevel: 'mid', centerY: -0.1, yRange: 0.24, speed: 1.5, turn: 1.4 },
+  'tiger-barb': { waterLevel: 'mid', centerY: -0.2, yRange: 0.24, speed: 1.4, turn: 1.3 },
+  // 神仙鱼：缓慢优雅，垂直上下游动幅度大（相对其它鱼仍为小幅）
+  angelfish: { waterLevel: 'mid', centerY: -0.2, yRange: 0.38, speed: 0.6, turn: 0.6 },
+  // 后加鱼种：金鱼稳健、斗鱼上层慢游、月光鱼中层、鼠鱼贴底觅食
+  goldfish: { waterLevel: 'mid', centerY: -0.1, yRange: 0.28, speed: 0.7, turn: 0.7 },
+  betta: { waterLevel: 'top', centerY: 0.75, yRange: 0.18, speed: 0.65, turn: 0.9 },
+  platy: { waterLevel: 'mid', centerY: 0.1, yRange: 0.2, speed: 1.05, turn: 1.0 },
+  cory: { waterLevel: 'bottom', centerY: -1.15, yRange: 0.1, speed: 0.8, turn: 0.9 },
 };
 
 const DEFAULT_CONFIG: MotionConfig = {
-  waterLevel: 'mid', centerY: -0.2, yRange: 0.6, speed: 1, turn: 1,
+  waterLevel: 'mid', centerY: -0.2, yRange: 0.22, speed: 1, turn: 1,
 };
 
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
@@ -87,6 +97,7 @@ export function createMotionState(
     z: horizontal.z,
     heading: rand() * Math.PI * 2,
     seed: rand() * Math.PI * 2,
+    turnRate: 0,
   };
 }
 
@@ -104,6 +115,7 @@ export function updateMotion(opts: UpdateMotionOptions): MotionState {
   const { state, specId, behaviorSpeed, dt, time, rand } = opts;
   const bounds = opts.bounds ?? DEFAULT_MOTION_BOUNDS;
   const config = FISH_MOTION_CONFIG[specId] ?? DEFAULT_CONFIG;
+  const headingBefore = state.heading;
   let heading = state.heading;
 
   // 1. 随机游走转向 + 平滑周期，避免纯随机抖动
@@ -140,10 +152,18 @@ export function updateMotion(opts: UpdateMotionOptions): MotionState {
     z = clamp(z, -bounds.halfZ, bounds.halfZ);
   }
 
-  // 4. 垂直方向在偏好水层内缓慢起伏
-  const targetY = config.centerY + Math.sin(time * 0.5 + state.seed) * config.yRange;
-  let y = state.y + (targetY - state.y) * clamp(2 * dt, 0, 1);
+  // 4. 垂直方向：两层慢正弦叠加，在偏好水层附近小幅起伏。
+  // 单层正弦 + 大振幅会让鱼像电梯一样直上直下，两层不同周期能打破节拍感
+  const targetY = config.centerY
+    + Math.sin(time * 0.21 + state.seed) * config.yRange * 0.7
+    + Math.sin(time * 0.53 + state.seed * 1.7) * config.yRange * 0.3;
+  // 跟随速率放慢：浴缸里的鱼不会瞬间升降，慢速跟随更自然
+  let y = state.y + (targetY - state.y) * clamp(0.9 * dt, 0, 1);
   y = clamp(y, bounds.yMin, bounds.yMax);
 
-  return { x, y, z, heading, seed: state.seed };
+  // 5. 转向角速度做低通平滑：随机转向是逐帧白噪声，直接用会让鱼身每帧左右抖
+  const rawTurn = dt > 1e-6 ? (heading - headingBefore) / dt : 0;
+  const turnRate = state.turnRate + (rawTurn - state.turnRate) * clamp(4 * dt, 0, 1);
+
+  return { x, y, z, heading, seed: state.seed, turnRate };
 }

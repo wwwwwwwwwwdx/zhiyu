@@ -76,10 +76,17 @@ export class CameraController {
     };
   }
 
-  update(_elapsed: number): void {
+  update(elapsed: number): void {
     // 始终以当前角度为准：拖拽实时更新，松手后保留用户转到的视角，不自动回正
     const spherical = new THREE.Spherical(this.radius, this.polar, this.azimuth);
     this.camera.position.setFromSpherical(spherical).add(this.target);
+    // 呼吸微动：不拖拽时缓慢小幅浮动，让镜头有"活"的感觉；
+    // elapsed 为 0 时偏移为 0，保持 update 的确定性与单测兼容
+    if (!this.dragging && elapsed > 0) {
+      const t = elapsed / 1000;
+      this.camera.position.x += Math.sin(t * 0.11) * 0.05;
+      this.camera.position.y += Math.sin(t * 0.07) * 0.04;
+    }
     this.camera.lookAt(this.target);
   }
 }

@@ -3,18 +3,32 @@
 状态：评审中
 最后更新：2026-11-05
 
+> 实现对照（2026-11-10）：本文为 M0 阶段方案，下表列出当前代码与方案的差异，以源码为准。
+>
+> | 方案 | 当前实现 |
+> |---|---|
+> | Vite 6 | Vite 5 |
+> | Zustand 订阅快照 | useState + 0.25 / 0.5 秒手动节流，源码无 zustand 引用 |
+> | ESLint + Prettier 质量门 | 未配置，仅有 TypeScript strict |
+> | core/World/Clock、organisms、equipment、offline、ui、telemetry、shared 目录 | 实际为 core / chemistry / biology / balance / progression，无 shared 与 ui |
+> | 结构化 DomainEvent 与 Command 对象 | 事件为中文字符串，命令为 14 个同步方法 |
+> | 渲染层状态插值 | 未实现，渲染直接读快照 + 纯函数游动增量 |
+> | 关键事件触发额外保存点 | 仅 15 秒定时 + 页面隐藏 + beforeunload |
+> | 核心数值模型 100% 单测覆盖 | 17 文件 107 用例；Renderer、React 组件、IndexedDB 仓储无单测 |
+> | Web Worker / 小程序端 | 仅保留迁移能力，尚未实现 |
+
 ## 一、技术选型总表
 
 | 层 | 选型 | 理由 |
 |---|---|---|
 | 语言 | TypeScript 5（strict） | 生态模拟涉及大量数值模型，强类型保障可维护性 |
-| 构建 | Vite 6 | 启动快、ESM 原生、Three.js 与 Web Worker 支持成熟 |
+| 构建 | Vite 5 | 启动快、ESM 原生、Three.js 与 Web Worker 支持成熟 |
 | UI 框架 | React 18 | 仅负责 HUD/面板/引导等界面外壳，生态最大 |
 | 3D 渲染 | Three.js（裸用，非 R3F） | 渲染循环与模拟引擎直接集成，可控性高，避免声明式 reconciler 开销 |
-| UI 状态 | Zustand | 轻量，订阅引擎快照，避免全量重渲染 |
+| UI 状态 | useState + 手动节流 | 快照按 0.25 / 0.5 秒刷新，未引入 Zustand |
 | 存档 | IndexedDB（idb 封装）+ JSON 导出 | 支持离线快照与大体积时序数据 |
 | 测试 | Vitest | 与 Vite 同构，引擎数值模型单测/回归 |
-| 规范 | ESLint + Prettier + TypeScript 严格模式 | 统一交付质量 |
+| 规范 | TypeScript 严格模式 | ESLint / Prettier 尚未配置 |
 | 包管理 | pnpm | 磁盘占用小、依赖严格 |
 
 ## 二、分层架构

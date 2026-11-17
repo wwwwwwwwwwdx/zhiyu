@@ -12,7 +12,9 @@ export type AnalyticsEventName =
   | 'feed'
   | 'water_change'
   | 'toggle_light'
-  | 'enter_fullscreen';
+  | 'switch_theme'
+  | 'enter_fullscreen'
+  | 'select_fish';
 
 export interface AnalyticsEvent {
   name: AnalyticsEventName;

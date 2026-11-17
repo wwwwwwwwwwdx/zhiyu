@@ -18,6 +18,7 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['tests/**/*.test.ts'],
+    // 组件用例使用 .tsx；交互级 DOM 测试需 jsdom，当前环境安装受阻，先以零依赖渲染测试覆盖
+    include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
   },
 });
