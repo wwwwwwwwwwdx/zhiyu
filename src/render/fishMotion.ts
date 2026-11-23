@@ -32,6 +32,58 @@ export interface MotionState {
   turnRate: number;
 }
 
+// 个体秉性：同一种鱼、甚至同一个模型的克隆，也不该是一个模子刻出来的游法。
+// 速度、转向、垂直起伏、冲刺节奏、摆尾参数都带个体差。
+// 关键设计：从鱼 id 哈希派生而不是 spawn 时的 Math.random——
+// 刷新页面、重载存档后，"这一条鱼"仍然是同一副脾气，个体才有身份。
+export interface FishTemper {
+  speedMul: number; // 巡游速度倍率
+  turnMul: number; // 转向强度倍率：有的鱼爱拐弯，有的认准一条道
+  wanderFreq: number; // 慢漂移的角频率
+  yRangeMul: number; // 垂直起伏幅度倍率
+  dartFreq: number; // 冲刺—滑行包络的角频率（周期十几秒到几十秒）
+  dartDepth: number; // 包络深度：接近 0 = 几乎匀速，接近 1 = 冲滑分明
+  tailFreqBase: number; // 摆尾基础频率
+  tailFreqSpeedK: number; // 摆尾频率随游速的增益
+  tailYawBase: number; // 尾部基础偏转角
+  tailYawSpeedK: number; // 偏转角随游速的增益
+  headSway: number; // 头部随摆尾的偏摆幅度
+  pecAmp: number; // 胸鳍扇动幅度
+}
+
+// FNV-1a 种子 + splitmix 式搅动，从鱼 id 派生 12 个独立随机数
+export function temperOf(fishId: string): FishTemper {
+  let h = 2166136261;
+  for (let i = 0; i < fishId.length; i++) {
+    h ^= fishId.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  const unit = (k: number): number => {
+    let z = (h + Math.imul(k, 0x9e3779b9)) >>> 0;
+    z = (z ^ (z >>> 16)) >>> 0;
+    z = Math.imul(z, 0x21f0aaad) >>> 0;
+    z = (z ^ (z >>> 15)) >>> 0;
+    z = Math.imul(z, 0x735a2d97) >>> 0;
+    return ((z ^ (z >>> 15)) >>> 0) / 4294967296;
+  };
+  const lerp = (a: number, b: number, r: number) => a + (b - a) * r;
+  const r = Array.from({ length: 12 }, (_, i) => unit(i + 1));
+  return {
+    speedMul: lerp(0.8, 1.25, r[0]),
+    turnMul: lerp(0.7, 1.4, r[1]),
+    wanderFreq: lerp(0.18, 0.5, r[2]),
+    yRangeMul: lerp(0.65, 1.4, r[3]),
+    dartFreq: lerp(0.16, 0.46, r[4]),
+    dartDepth: lerp(0.35, 1, r[5]),
+    tailFreqBase: lerp(3.2, 4.6, r[6]),
+    tailFreqSpeedK: lerp(12, 19, r[7]),
+    tailYawBase: lerp(0.15, 0.23, r[8]),
+    tailYawSpeedK: lerp(0.2, 0.3, r[9]),
+    headSway: lerp(0.06, 0.11, r[10]),
+    pecAmp: lerp(0.3, 0.46, r[11]),
+  };
+}
+
 // 默认长方缸边界（等价历史写死值，砂面约 -1.575）
 export const DEFAULT_MOTION_BOUNDS: MotionBounds = {
   kind: 'box', yMin: -1.5, yMax: 1.3, halfX: 2.6, halfZ: 1.2,
@@ -88,12 +140,14 @@ function randomHorizontal(bounds: MotionBounds, rand: () => number): { x: number
 
 export function createMotionState(
   specId: string, rand: () => number, bounds: MotionBounds = DEFAULT_MOTION_BOUNDS,
+  temper?: FishTemper,
 ): MotionState {
   const config = FISH_MOTION_CONFIG[specId] ?? DEFAULT_CONFIG;
   const horizontal = randomHorizontal(bounds, rand);
+  const yRange = config.yRange * (temper?.yRangeMul ?? 1);
   return {
     x: horizontal.x,
-    y: config.centerY + (rand() - 0.5) * config.yRange,
+    y: config.centerY + (rand() - 0.5) * yRange,
     z: horizontal.z,
     heading: rand() * Math.PI * 2,
     seed: rand() * Math.PI * 2,
@@ -109,18 +163,23 @@ export interface UpdateMotionOptions {
   time: number; // 累计秒，用于周期性摆动
   rand: () => number;
   bounds?: MotionBounds;
+  // 个体秉性：缺省时全部等价于 1 倍/原频率，保证旧调用行为不变
+  temper?: FishTemper;
 }
 
 export function updateMotion(opts: UpdateMotionOptions): MotionState {
   const { state, specId, behaviorSpeed, dt, time, rand } = opts;
   const bounds = opts.bounds ?? DEFAULT_MOTION_BOUNDS;
   const config = FISH_MOTION_CONFIG[specId] ?? DEFAULT_CONFIG;
+  const temper = opts.temper;
   const headingBefore = state.heading;
   let heading = state.heading;
 
-  // 1. 随机游走转向 + 平滑周期，避免纯随机抖动
-  heading += (rand() - 0.5) * config.turn * dt;
-  heading += Math.sin(time * 0.3 + state.seed) * config.turn * 0.25 * dt;
+  // 1. 随机游走转向 + 平滑周期，避免纯随机抖动。
+  //    转向强度与慢漂移频率走个体秉性：有的鱼走直线，有的鱼到处拐
+  const turn = config.turn * (temper?.turnMul ?? 1);
+  heading += (rand() - 0.5) * turn * dt;
+  heading += Math.sin(time * (temper?.wanderFreq ?? 0.3) + state.seed) * turn * 0.25 * dt;
 
   // 2. 靠近边界时平滑转向缸中心
   const margin = 0.8;
@@ -135,7 +194,7 @@ export function updateMotion(opts: UpdateMotionOptions): MotionState {
   }
 
   // 3. 沿 heading 前进
-  const speed = config.speed * behaviorSpeed;
+  const speed = config.speed * behaviorSpeed * (temper?.speedMul ?? 1);
   let x = state.x + Math.cos(heading) * speed * dt;
   let z = state.z - Math.sin(heading) * speed * dt;
 
@@ -153,10 +212,12 @@ export function updateMotion(opts: UpdateMotionOptions): MotionState {
   }
 
   // 4. 垂直方向：两层慢正弦叠加，在偏好水层附近小幅起伏。
-  // 单层正弦 + 大振幅会让鱼像电梯一样直上直下，两层不同周期能打破节拍感
+  // 单层正弦 + 大振幅会让鱼像电梯一样直上直下，两层不同周期能打破节拍感。
+  // 起伏幅度也带个体差：有的鱼安静待在自己的水层，有的喜欢上蹿下跳
+  const yRange = config.yRange * (temper?.yRangeMul ?? 1);
   const targetY = config.centerY
-    + Math.sin(time * 0.21 + state.seed) * config.yRange * 0.7
-    + Math.sin(time * 0.53 + state.seed * 1.7) * config.yRange * 0.3;
+    + Math.sin(time * 0.21 + state.seed) * yRange * 0.7
+    + Math.sin(time * 0.53 + state.seed * 1.7) * yRange * 0.3;
   // 跟随速率放慢：浴缸里的鱼不会瞬间升降，慢速跟随更自然
   let y = state.y + (targetY - state.y) * clamp(0.9 * dt, 0, 1);
   y = clamp(y, bounds.yMin, bounds.yMax);

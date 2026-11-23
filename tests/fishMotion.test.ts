@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  createMotionState, updateMotion, FISH_MOTION_CONFIG, TANK_MOTION_BOUNDS,
-  type MotionState, type MotionBounds,
+  createMotionState, updateMotion, FISH_MOTION_CONFIG, TANK_MOTION_BOUNDS, temperOf,
+  type MotionState, type MotionBounds, type FishTemper,
 } from '../src/render/fishMotion';
 
 const fixedRand = () => 0.5;
@@ -114,5 +114,77 @@ describe('鱼游动差异化', () => {
     expect(firstStep).toBeGreaterThan(0);
     // 第二步的增量应小于第一步（指数逼近），说明在平滑而不是直接跳到目标值
     expect(secondStep).toBeLessThan(firstStep);
+  });
+});
+
+describe('个体秉性（同种鱼不同个体）', () => {
+  it('temperOf 对同一条鱼稳定，刷新后脾气不变', () => {
+    expect(temperOf('fish-abc-123')).toEqual(temperOf('fish-abc-123'));
+  });
+
+  it('不同个体的秉性不同，不会共用一套游动习惯', () => {
+    const ids = ['fish-1', 'fish-2', 'fish-3', 'fish-4', 'fish-5', 'fish-6'];
+    const tempers = ids.map(temperOf);
+    // 任意两条鱼至少有若干参数显著不同（允许个别参数巧合接近）
+    for (let i = 1; i < tempers.length; i++) {
+      const diffs = ['speedMul', 'turnMul', 'dartFreq', 'dartDepth', 'tailFreqBase', 'tailYawBase']
+        .filter((key) => Math.abs(tempers[0][key as keyof FishTemper] - tempers[i][key as keyof FishTemper]) > 0.01);
+      expect(diffs.length).toBeGreaterThanOrEqual(2);
+    }
+    // 整组来看，各参数应有分布（不是全部挤在同一个值上）
+    const speeds = tempers.map((t) => t.speedMul);
+    expect(Math.max(...speeds) - Math.min(...speeds)).toBeGreaterThan(0.1);
+  });
+
+  it('temper 各参数落在声明的区间内', () => {
+    const t = temperOf('any-fish-id');
+    expect(t.speedMul).toBeGreaterThanOrEqual(0.8);
+    expect(t.speedMul).toBeLessThanOrEqual(1.25);
+    expect(t.turnMul).toBeGreaterThanOrEqual(0.7);
+    expect(t.turnMul).toBeLessThanOrEqual(1.4);
+    expect(t.dartFreq).toBeGreaterThanOrEqual(0.16);
+    expect(t.dartFreq).toBeLessThanOrEqual(0.46);
+    expect(t.dartDepth).toBeGreaterThanOrEqual(0.35);
+    expect(t.dartDepth).toBeLessThanOrEqual(1);
+    expect(t.tailFreqBase).toBeGreaterThanOrEqual(3.2);
+    expect(t.tailFreqBase).toBeLessThanOrEqual(4.6);
+    expect(t.headSway).toBeGreaterThan(0);
+    expect(t.pecAmp).toBeGreaterThan(0);
+  });
+
+  it('speedMul 大的个体单位时间游得更远', () => {
+    const base = createMotionState('neon', fixedRand);
+    const slow = { ...base };
+    const fast = { ...base };
+    let slowState = slow;
+    let fastState = fast;
+    for (let i = 0; i < 40; i++) {
+      slowState = updateMotion({
+        state: slowState, specId: 'neon', behaviorSpeed: 1, dt: 0.05, time: i * 0.05,
+        rand: fixedRand, bounds: TANK_MOTION_BOUNDS, temper: { ...temperOf('x'), speedMul: 0.8 },
+      });
+      fastState = updateMotion({
+        state: fastState, specId: 'neon', behaviorSpeed: 1, dt: 0.05, time: i * 0.05,
+        rand: fixedRand, bounds: TANK_MOTION_BOUNDS, temper: { ...temperOf('x'), speedMul: 1.25 },
+      });
+    }
+    const dSlow = Math.hypot(slowState.x - base.x, slowState.z - base.z);
+    const dFast = Math.hypot(fastState.x - base.x, fastState.z - base.z);
+    expect(dFast).toBeGreaterThan(dSlow);
+  });
+
+  it('不传 temper 时行为与旧版一致（缺省全为 1 倍）', () => {
+    const withNeutral = updateMotion({
+      state: createMotionState('guppy', fixedRand), specId: 'guppy',
+      behaviorSpeed: 1, dt: 0.05, time: 0, rand: fixedRand, bounds: TANK_MOTION_BOUNDS,
+      temper: { ...temperOf('neutral'), speedMul: 1, turnMul: 1, yRangeMul: 1, wanderFreq: 0.3 },
+    });
+    const without = updateMotion({
+      state: createMotionState('guppy', fixedRand), specId: 'guppy',
+      behaviorSpeed: 1, dt: 0.05, time: 0, rand: fixedRand, bounds: TANK_MOTION_BOUNDS,
+    });
+    expect(withNeutral.x).toBeCloseTo(without.x, 10);
+    expect(withNeutral.y).toBeCloseTo(without.y, 10);
+    expect(withNeutral.heading).toBeCloseTo(without.heading, 10);
   });
 });

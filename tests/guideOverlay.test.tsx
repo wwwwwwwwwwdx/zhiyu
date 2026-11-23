@@ -9,7 +9,7 @@ const render = (
   engine: ReturnType<typeof createEngine>,
   snapshot = engine.getSnapshot(),
 ) => renderToStaticMarkup(
-  <GuideOverlay engine={engine} snapshot={snapshot} onChanged={() => {}} />,
+  <GuideOverlay engine={engine} snapshot={snapshot} onChanged={() => {}} onOpenShop={() => {}} />,
 );
 
 describe('新手引导组件渲染', () => {

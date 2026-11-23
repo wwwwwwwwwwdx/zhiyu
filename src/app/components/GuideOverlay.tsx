@@ -8,10 +8,11 @@ interface Props {
   engine: Engine;
   snapshot: Snapshot;
   onChanged: () => void;
+  onOpenShop: () => void;
 }
 
 // 新手引导：开缸养水 → 放第一条鱼 → 第一次喂食
-export default function GuideOverlay({ engine, snapshot, onChanged }: Props) {
+export default function GuideOverlay({ engine, snapshot, onChanged, onOpenShop }: Props) {
   const [step, setStep] = useState<Step>(0);
 
   // 依据引擎状态自动推进
@@ -20,12 +21,10 @@ export default function GuideOverlay({ engine, snapshot, onChanged }: Props) {
     if (step === 2 && snapshot.fishes.length > 0) setStep(3);
   }, [step, snapshot]);
 
-  // 目标区块高亮
+  // 目标区块高亮：工具栏在引导期隐藏，不再高亮底部商店按钮；
+  // 改由引导卡片自己带「去商店」按钮，用户照着点即可
   useEffect(() => {
-    // 步骤 2 高亮底部「商店」按钮，引导用户打开商店放鱼
-    const targetId = step === 2 ? 'guide-shop-btn' : null;
     document.querySelectorAll('.guide-highlight').forEach((el) => el.classList.remove('guide-highlight'));
-    if (targetId) document.getElementById(targetId)?.classList.add('guide-highlight');
   }, [step]);
 
   if (snapshot.guideDone) return null;
@@ -43,7 +42,9 @@ export default function GuideOverlay({ engine, snapshot, onChanged }: Props) {
     },
     2: {
       title: '硝化系统已建立',
-      body: '现在可以放鱼了。点底部的「商店」，在「小鱼」里选一条喜欢的带回家。',
+      body: '现在可以放鱼了。点下面的「去商店」，在「小鱼」里选一条喜欢的带回家。',
+      actionText: '去商店',
+      action: () => { onOpenShop(); },
     },
     3: {
       title: '鱼入缸了',
@@ -72,22 +73,35 @@ export default function GuideOverlay({ engine, snapshot, onChanged }: Props) {
   return (
     <>
       <style>{`
-        .guide-highlight { outline: 2px solid var(--jade-500); outline-offset: 3px; box-shadow: 0 0 14px rgba(95,133,116,0.5); border-radius: 14px; }
+        .guide-card {
+          position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%);
+          z-index: 3; width: min(420px, calc(100% - 32px));
+          padding: 20px 22px; border-radius: 18px;
+          animation: guide-in .4s ease both;
+        }
+        @keyframes guide-in { from { opacity: 0; transform: translate(-50%, 12px); } to { opacity: 1; transform: translate(-50%, 0); } }
+        .guide-action-row { display: flex; align-items: center; gap: 12px; }
+        .guide-skip {
+          border: 0; background: transparent; cursor: pointer; padding: 6px 2px;
+          font-family: inherit; font-size: 12px; color: var(--ink-soft);
+          opacity: .7; transition: opacity .2s ease;
+        }
+        .guide-skip:hover { opacity: 1; }
+        @media (max-width: 600px) {
+          .guide-card { bottom: 24px; padding: 18px; }
+        }
       `}</style>
-      <div
-        className="glass"
-        style={{
-          position: 'absolute', left: 20, bottom: 24, zIndex: 3, width: 300,
-          padding: 18, borderRadius: 18,
-        }}
-      >
+      <div className="glass guide-card">
         <div style={{ fontSize: 15, marginBottom: 8, fontWeight: 600 }}>{item.title}</div>
         <p style={{ fontSize: 13, color: 'var(--ink-soft)', margin: '0 0 14px', lineHeight: 1.6 }}>{item.body}</p>
-        {item.action && (
-          <button className="btn btn-primary" onClick={item.action}>
-            {item.actionText}
-          </button>
-        )}
+        <div className="guide-action-row">
+          {item.action && (
+            <button className="btn btn-primary" onClick={item.action}>
+              {item.actionText}
+            </button>
+          )}
+          <button className="guide-skip" onClick={() => { engine.completeGuide(); onChanged(); }}>跳过引导</button>
+        </div>
         <div style={{ marginTop: 14, display: 'flex', gap: 5 }}>
           {[0, 1, 2, 3, 4].map((i) => (
             <span

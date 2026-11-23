@@ -9,7 +9,7 @@ import { loadModel } from './ModelLoader';
 import { IconRenderer } from './IconRenderer';
 import { CameraController } from './CameraController';
 import { PerformanceMonitor, QUALITY_PRESET, tierFromFps, type QualityTier } from './PerformanceMonitor';
-import { createMotionState, updateMotion, type MotionState, type MotionBounds } from './fishMotion';
+import { createMotionState, updateMotion, temperOf, type MotionState, type MotionBounds, type FishTemper } from './fishMotion';
 import { getRareVariant, COMMON_VARIANT } from '../engine/biology/variants';
 import { getEnvironment, ENVIRONMENT_CATALOG, DEFAULT_ENVIRONMENT, type EnvironmentConfig } from '../engine/balance/environments';
 import { getTankShape, DEFAULT_TANK_SHAPE, type TankShapeSpec } from '../engine/balance/tankShapes';
@@ -19,21 +19,26 @@ import { DEFAULT_SCENE_SKIN, getSkin, type SceneSkin } from './sceneSkin';
 // 每条鱼独立的游泳画像。
 // 模板 clone 会共享 geometry 与 material，所以这里的 uniform 必须挂在逐鱼克隆出的
 // 材质上，否则整缸鱼共用一个相位，摆尾会完全同步。
+//
+// 相位（phaseUniform）是**累计量**：每帧 phase += freq * dt。
+// 上一版用"时间 × 频率"在着色器里算相位，而频率是随游速变化的——
+// 相位的一阶导就成了 freq + time·dfreq/dt，time 越大项越炸，
+// 表现为"每隔几秒尾巴突然狂摆"，且页面开得越久越严重。这是本文件最重要的一个坑。
 interface SwimProfile {
-  phase: number;
-  freq: number; // 角频率（弧度/秒），由个体实时游速驱动
+  phase: number; // 固定随机相位：错开各鱼的摆尾起点与胸鳍相位
+  freq: number; // 角频率（弧度/秒），由个体实时游速驱动；只积分进相位，不再乘时间
   yaw: number; // 尾部最大偏转角（弧度）
   speed: number; // 平滑后的游速，单位/秒
   bodyLength: number; // 模型实际体长，偏转角按它换算横向摆幅
-  phaseUniform: { value: number };
+  phaseUniform: { value: number }; // 累计相位（初始值 = 随机相位），每帧 += freq*dt
   uniforms: {
-    uSwimFreq: { value: number };
     uSwimYaw: { value: number };
     uTurnBend: { value: number };
     uBodyMaxX: { value: number };
     uBodyInvLen: { value: number };
   };
   pecs: Array<{ obj: THREE.Object3D; baseY: number; side: number }>;
+  temper: FishTemper; // 个体秉性（速度/转向/摆尾参数的个体差）
 }
 
 // M2 渲染：鱼群随引擎快照动态增减，支持 glTF 模型替换低模占位，失败降级
@@ -471,6 +476,43 @@ export class Renderer {
     return new THREE.CanvasTexture(canvas);
   }
 
+  // 生成矩形截面的四棱台光罩：顶部贴合灯条全长、底部铺满缸口，
+  // 四个斜面各视角都能看到一片完整光幕（替代原来上小下大的细圆锥——
+  // 那东西从正面看就是一道从缸中心射出的窄梯形，完全不像鱼缸灯）。
+  // UV：v=1 顶部（渐变纹理 alpha 高）、v=0 底部（alpha 0 自然淡出）；
+  // u 横向 0→1，让每面左右两端随纹理淡出、中间最亮，柔化棱角接缝。
+  private makeShaftGeometry(
+    topW: number, topD: number, botW: number, botD: number, height: number,
+  ): THREE.BufferGeometry {
+    const halfH = height / 2;
+    // 顶面四角 / 底面四角（顺序绕一圈，保证侧面连续）
+    const top = [
+      [-topW / 2, halfH, -topD / 2], [topW / 2, halfH, -topD / 2],
+      [topW / 2, halfH, topD / 2], [-topW / 2, halfH, topD / 2],
+    ];
+    const bottom = [
+      [-botW / 2, -halfH, -botD / 2], [botW / 2, -halfH, -botD / 2],
+      [botW / 2, -halfH, botD / 2], [-botW / 2, -halfH, botD / 2],
+    ];
+    const positions: number[] = [];
+    const uvs: number[] = [];
+    const push = (p: number[], u: number, v: number): void => {
+      positions.push(p[0], p[1], p[2]);
+      uvs.push(u, v);
+    };
+    for (let i = 0; i < 4; i++) {
+      const j = (i + 1) % 4;
+      // 每个侧面拆两个三角形：顶左→底左→顶右，顶右→底左→底右
+      push(top[i], 0, 1); push(bottom[i], 0, 0); push(top[j], 1, 1);
+      push(top[j], 1, 1); push(bottom[i], 0, 0); push(bottom[j], 1, 0);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geo.computeVertexNormals();
+    return geo;
+  }
+
   // 灯具实体 + 光束：缸上方支架式灯盘，光束从灯盘向下发出，随灯光开关联动
   private createLightShaft(): void {
     // 纹理是中性灰渐变，只由材质 color 上色；换皮重建灯具时不能重做，否则旧纹理泄漏
@@ -554,20 +596,26 @@ export class Renderer {
       lampGroup.add(footPlate);
     }
 
-    // 光束：从灯盘下方发出，顶部对齐灯盘，底部自然淡出；尺寸随灯盘比例，轻微倾斜让边缘可辨
+    // 光束：矩形光罩，顶部贴合灯条全长、底部铺满整个缸口，四斜面用渐变纹理柔和淡出
+    // ——整缸都被照到，而不是从缸中心射出一束窄梯形聚光。
+    // opacity 压低：铺开后前后两层斜面叠加，不压会把上半缸糊成一片白。
     const material = new THREE.MeshBasicMaterial({
       map: this.shaftTexture,
       color: this.skin.shaft, // 带实际色相的青，配合透明渐变，在浅色背景上柔和可见
       transparent: true,
+      opacity: 0.42,
       depthWrite: false,
       side: THREE.DoubleSide,
       blending: THREE.NormalBlending,
     });
+    // 光罩底边必须停在底砂上表面（y=-1.575）之上：原来底边 y=-1.75 正好插进
+    // 底砂盒子中心，半透明斜面与不透明砂面深度打架，缸底会频闪。
+    // 现取上沿 y=1.80（贴发光板下沿）、下沿 y=-1.45（离砂面 0.125），高 3.25。
     this.lightShaft = new THREE.Mesh(
-      new THREE.CylinderGeometry(lampW * 0.12, lampW * 0.28, 3.6, 24, 1, true), material,
+      this.makeShaftGeometry(lampW, lampD, tankW * 0.96, tankD * 0.96, 3.25), material,
     );
-    this.lightShaft.position.set(0, 0.05, 0);
-    this.lightShaft.rotation.z = 0.05;
+    this.lightShaft.position.set(0, 0.175, 0);
+    // 不再倾斜：光罩要对称覆盖整缸，歪了反而露馅
     this.lightShaft.renderOrder = 3;
     lampGroup.add(this.lightShaft);
 
@@ -1059,7 +1107,7 @@ export class Renderer {
   //    看起来像抽搐而不是游动。改成每条鱼一个固定随机相位。
   // 3) 频率全缸统一：悬停的鱼和急游的鱼同频。改成逐鱼 uniform，由个体实时游速驱动。
   // 返回这条鱼的游泳画像，交给 update 每帧驱动；胸鳍不进顶点动画，改由 update 旋转。
-  applyFishWarp(obj: THREE.Object3D): SwimProfile {
+  applyFishWarp(obj: THREE.Object3D, fishId = ''): SwimProfile {
     // 体长必须实测：各鱼种模型尺寸差一倍以上（guppy 体长仅 0.6），
     // 写死 0.2/-0.6 会让体型小的鱼尾部权重永远到不了 1，摆幅白白打个对折
     const box = new THREE.Box3();
@@ -1071,23 +1119,26 @@ export class Renderer {
       if (mesh.geometry.boundingBox) box.union(mesh.geometry.boundingBox);
     });
     const bodyLength = Math.max(0.2, box.max.x - box.min.x);
+    // 秉性从鱼 id 派生：同种鱼不同个体脾气不同，且刷新后仍是同一副脾气
+    const temper = temperOf(fishId);
+    const phase = Math.random() * Math.PI * 2;
     const profile: SwimProfile = {
-      phase: Math.random() * Math.PI * 2,
-      freq: 5.4,
-      yaw: 0.26,
+      phase,
+      // 初始频率取个体基准：起播就带个性，不会先"全缸同频"再各自漂开
+      freq: temper.tailFreqBase,
+      yaw: temper.tailYawBase,
       speed: 0.2,
       bodyLength,
-      phaseUniform: { value: 0 },
+      phaseUniform: { value: phase },
       uniforms: {
-        uSwimFreq: { value: 5.4 },
-        uSwimYaw: { value: 0.26 },
+        uSwimYaw: { value: temper.tailYawBase },
         uTurnBend: { value: 0 },
         uBodyMaxX: { value: box.max.x },
         uBodyInvLen: { value: 1 / bodyLength },
       },
       pecs: [],
+      temper,
     };
-    profile.phaseUniform.value = profile.phase;
 
     // 同种鱼的模板 clone 共享材质，必须逐鱼复制，uniform 才不会串
     const clonedMats = new Map<THREE.Material, THREE.Material>();
@@ -1123,9 +1174,9 @@ export class Renderer {
     if (mat.userData.swimWarp) return;
     mat.userData.swimWarp = true;
     mat.onBeforeCompile = (shader) => {
-      shader.uniforms.uSwimTime = this.swimTime;
+      // 注意没有 uSwimTime/uSwimFreq：相位由 CPU 每帧积分好再传进来。
+      // 着色器里做 time*freq 的话，freq 一变相位就跳——见 SwimProfile 的注释
       shader.uniforms.uSwimPhase = profile.phaseUniform;
-      shader.uniforms.uSwimFreq = profile.uniforms.uSwimFreq;
       shader.uniforms.uSwimYaw = profile.uniforms.uSwimYaw;
       shader.uniforms.uTurnBend = profile.uniforms.uTurnBend;
       shader.uniforms.uBodyMaxX = profile.uniforms.uBodyMaxX;
@@ -1134,9 +1185,7 @@ export class Renderer {
         .replace(
           '#include <common>',
           `#include <common>
-          uniform float uSwimTime;
           uniform float uSwimPhase;
-          uniform float uSwimFreq;
           uniform float uSwimYaw;
           uniform float uTurnBend;
           uniform float uBodyMaxX;
@@ -1148,8 +1197,9 @@ export class Renderer {
           {
             // 体轴归一化：吻端 0 → 尾尖 1（按模型实测包围盒，不写死坐标）
             float t = clamp((uBodyMaxX - position.x) * uBodyInvLen, 0.0, 1.0);
-            // 行波：相位沿体轴滞后，波峰由头向尾传，鱼身才会呈 S 形而不是整体平移
-            float ang = uSwimTime * uSwimFreq - uSwimPhase - t * 3.4;
+            // 行波：相位沿体轴滞后，波峰由头向尾传，鱼身才会呈 S 形而不是整体平移。
+            // uSwimPhase 是累计相位，随游速连续变化，不随全局时间突变
+            float ang = uSwimPhase - t * 3.4;
             // 摆角向尾部集中，头颈保持稳定
             float w = pow(t, 1.6);
             // 绕头部竖直轴偏转，而不是沿 z 轴平移：
@@ -1219,7 +1269,7 @@ export class Renderer {
   }
 
   // 造一条鱼：优先按鱼种 glb 模板克隆，其次单模板，否则锥体占位；稀有品系用专属颜色
-  private createFishMesh(i: number, specId: string, variant: string): THREE.Object3D {
+  private createFishMesh(i: number, specId: string, variant: string, fishId = ''): THREE.Object3D {
     const rare = variant === COMMON_VARIANT ? undefined : getRareVariant(specId, variant);
     let obj: THREE.Object3D;
     const typed = this.fishTemplates.get(specId);
@@ -1240,8 +1290,9 @@ export class Renderer {
         new THREE.MeshStandardMaterial({ color }),
       );
     }
-    // 摆尾顶点动画（放在换色之后，确保注入的是最终材质）；鱼在砂面上投下软阴影
-    obj.userData.swim = this.applyFishWarp(obj);
+    // 摆尾顶点动画（放在换色之后，确保注入的是最终材质）；鱼在砂面上投下软阴影。
+    // 传入鱼 id：摆尾参数的个体差从 id 派生，否则克隆鱼会共用同一副脾气
+    obj.userData.swim = this.applyFishWarp(obj, fishId);
     obj.traverse((child) => {
       const m = child as THREE.Mesh;
       if (m.isMesh) m.castShadow = true;
@@ -1267,10 +1318,10 @@ export class Renderer {
     // 新增鱼
     snapshot.fishes.forEach((f, i) => {
       if (!this.fishMeshes.has(f.id)) {
-        const mesh = this.createFishMesh(i, f.specId, f.variant);
+        const mesh = this.createFishMesh(i, f.specId, f.variant, f.id);
         this.scene.add(mesh);
         this.fishMeshes.set(f.id, mesh);
-        this.fishMotion.set(f.id, createMotionState(f.specId, Math.random, this.motionBounds));
+        this.fishMotion.set(f.id, createMotionState(f.specId, Math.random, this.motionBounds, temperOf(f.id)));
         const swim = mesh.userData.swim as SwimProfile | undefined;
         if (swim) this.fishSwim.set(f.id, swim);
       }
@@ -1360,6 +1411,7 @@ export class Renderer {
         Math.max(0, index),
         fish?.specId ?? '',
         fish?.variant ?? COMMON_VARIANT,
+        id,
       );
       // 立即从保留的运动状态恢复位置与朝向，避免首帧前重叠在原点
       const motion = this.fishMotion.get(id);
@@ -1680,10 +1732,15 @@ export class Renderer {
     snapshot.fishes.forEach((f) => {
       const mesh = this.fishMeshes.get(f.id)!;
       const prev = this.fishMotion.get(f.id)!;
+      const swim = this.fishSwim.get(f.id);
+      const temper = swim?.temper ?? temperOf(f.id);
       // 冲刺—滑行节奏：真小鱼是摆尾几下加速、然后收尾滑行，不是匀速巡航。
       // 匀速平移是"呆板"的主要来源之一，这一层几乎免费——摆尾频率本来就跟游速走。
-      // seed 本身就是每条鱼各自的随机相位，直接拿来错开节奏，整缸不会同步起伏
-      const dart = 0.55 + 0.75 * Math.pow(0.5 + 0.5 * Math.sin(timeSeconds * 0.31 + prev.seed), 1.6);
+      // 节奏参数走个体秉性：有的鱼几乎匀速巡游，有的冲滑分明；
+      // 周期（dartFreq）与深度（dartDepth）都是这条鱼自己的，不同鱼不会同步起伏
+      const burst = 0.5 + 0.5 * Math.sin(timeSeconds * temper.dartFreq + prev.seed);
+      const dart = 1 - 0.45 * temper.dartDepth
+        + 0.75 * temper.dartDepth * Math.pow(burst, 1.6);
       const next = updateMotion({
         state: prev,
         specId: f.specId,
@@ -1692,6 +1749,7 @@ export class Renderer {
         time: timeSeconds,
         rand: Math.random,
         bounds: this.motionBounds,
+        temper,
       });
       this.fishMotion.set(f.id, next);
       mesh.position.set(next.x, next.y, next.z);
@@ -1710,31 +1768,34 @@ export class Renderer {
       mesh.rotation.x = pose.roll;
       this.fishPose.set(f.id, pose);
 
-      // 摆尾：频率与振幅跟着这条鱼自己的游速走 —— 悬停时慢摆、急游时快摆，
-      // 这是"活"的一半来源。全缸统一频率会让所有鱼像同一个发条带动的。
-      const swim = this.fishSwim.get(f.id);
       if (swim) {
+        // 摆尾：频率与振幅跟着这条鱼自己的游速走 —— 悬停时慢摆、急游时快摆，
+        // 这是"活"的一半来源。基准值与增益都来自个体秉性：同种鱼里
+        // 也有天生尾巴勤快的和天生慢条斯理的
         const inst = dt > 1e-6 ? Math.hypot(next.x - prev.x, next.z - prev.z) / dt : 0;
         swim.speed += (inst - swim.speed) * Math.min(1, 3 * dt);
-        const targetFreq = 3.8 + swim.speed * 15;
+        const targetFreq = temper.tailFreqBase + swim.speed * temper.tailFreqSpeedK;
         swim.freq += (targetFreq - swim.freq) * Math.min(1, 2.5 * dt);
-        swim.uniforms.uSwimFreq.value = swim.freq;
+        // 相位积分：唯一的相位来源。频率怎么变，相位都只按 freq*dt 连续推进，
+        // 绝不会出现 time*freq 那种"频率一变相位猛跳"的抽搐
+        swim.phaseUniform.value += swim.freq * dt;
         // 偏转角随游速增大：悬停约 10°，急游到 30° 左右。
         // 折算成横向摆幅约为体长的 10%~30%，低于 10% 在正常镜头距离上读不出来
-        swim.yaw = 0.18 + swim.speed * 0.25;
+        swim.yaw = temper.tailYawBase + swim.speed * temper.tailYawSpeedK;
         swim.uniforms.uSwimYaw.value = swim.yaw;
         // 头部随摆尾轻微左右摆：正面视角下摆尾是深度方向的，真正让鱼"活"的
-        // 是这几度的头部偏摆
-        const headSway = Math.sin(timeSeconds * swim.freq - swim.phase) * 0.085;
+        // 是这几度的头部偏摆。相位直接复用累计相位，与体波同源不脱节
+        const headSway = Math.sin(swim.phaseUniform.value) * temper.headSway;
         mesh.rotation.y = next.heading + headSway;
         // 转弯时身体弯成弧。做低通：直接取 turnRate 会在贴边转向时一步顶到限幅，
         // 鱼身像被折断；平滑后是一段渐进的弧
         const bendTarget = Math.max(-0.16, Math.min(0.16, -next.turnRate * 0.07));
         swim.uniforms.uTurnBend.value += (bendTarget - swim.uniforms.uTurnBend.value) * Math.min(1, 3 * dt);
-        // 胸鳍绕根部扇动：左右反相，频率略慢于摆尾，悬停时才有"扑扇"的读感
+        // 胸鳍绕根部扇动：左右反相，频率略慢于摆尾，悬停时才有"扑扇"的读感。
+        // 幅度走个体秉性；相位从累计相位导出，不会在频率变化时跳变
         for (const pec of swim.pecs) {
-          const pecPhase = timeSeconds * swim.freq * 0.9 + swim.phase + (pec.side > 0 ? 0 : Math.PI);
-          pec.obj.rotation.y = pec.baseY + Math.sin(pecPhase) * 0.38;
+          const pecPhase = swim.phaseUniform.value * 0.9 + swim.phase + (pec.side > 0 ? 0 : Math.PI);
+          pec.obj.rotation.y = pec.baseY + Math.sin(pecPhase) * temper.pecAmp;
         }
       }
     });

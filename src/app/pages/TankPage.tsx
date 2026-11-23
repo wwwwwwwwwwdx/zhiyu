@@ -127,12 +127,27 @@ export default function TankPage() {
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
   }, []);
 
+  // 全屏：手机浏览器（尤其 iOS Safari）不支持 Fullscreen API，
+  // root.requestFullscreen 可能是 undefined，直接调用会同步抛错、.catch 接不住，
+  // 表现为「点了没反应」。这里先探测能力，不支持就明确提示，并兼容 iOS webkit 私有 API。
   function toggleFullscreen(): void {
+    type WebkitEl = HTMLElement & { webkitRequestFullscreen?: () => Promise<void> | void };
     if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => undefined);
-    } else {
-      const root = mountRef.current?.parentElement;
-      root?.requestFullscreen().catch(() => setNotice('当前浏览器不支持全屏'));
+      void document.exitFullscreen().catch(() => undefined);
+      return;
+    }
+    const root = mountRef.current?.parentElement as WebkitEl | undefined;
+    if (!root) return;
+    const request = root.requestFullscreen?.bind(root)
+      ?? root.webkitRequestFullscreen?.bind(root);
+    if (!request) {
+      setNotice('当前浏览器不支持全屏，可用手机横屏获得更大画面');
+      return;
+    }
+    try {
+      Promise.resolve(request()).catch(() => setNotice('全屏被浏览器拦截，请检查站点权限'));
+    } catch {
+      setNotice('当前浏览器不支持全屏');
     }
   }
 
@@ -427,12 +442,13 @@ export default function TankPage() {
       <Link to="/" className="top-back pill glass">← 知鱼</Link>
       <div className="coin-pill pill glass">{snapshot?.coins ?? 0} 金币</div>
 
-      {/* 新手引导 */}
+      {/* 新手引导：引导期间底部工具栏整个隐藏，用户眼里只有这一步该做的事 */}
       {snapshot && engineRef.current && (
         <GuideOverlay
           engine={engineRef.current}
           snapshot={snapshot}
           onChanged={refreshSnapshot}
+          onOpenShop={() => { setShopTab('fish'); setPanelBoth('shop'); }}
         />
       )}
 
@@ -851,8 +867,10 @@ export default function TankPage() {
         </>
       )}
 
-      {/* 底部浮动操作坞：核心陪伴动作一屏可达，全屏时隐藏 */}
-      {!isFullscreen && (
+      {/* 底部浮动操作坞：核心陪伴动作一屏可达。
+          引导未完成时不显示——避免新手不看引导就乱点菜单；
+          录制/全屏为 PC 专属，窄屏由 .pc-only 隐藏。 */}
+      {!isFullscreen && snapshot?.guideDone && (
         <div className="dock glass">
           <button className="btn-icon" onClick={() => { track('feed'); run(() => engineRef.current!.feed(1)); }}>喂食</button>
           <button className="btn-icon" onClick={() => { track('water_change'); run(() => engineRef.current!.changeWater(1 / 3)); }}>换水</button>
@@ -866,14 +884,14 @@ export default function TankPage() {
             }}
           >{lightOn ? '关灯' : '开灯'}</button>
           <span className="dock-divider" />
-          <button id="guide-shop-btn" className="btn-icon" onClick={() => setPanelBoth('shop')}>商店</button>
+          <button className="btn-icon" onClick={() => setPanelBoth('shop')}>商店</button>
           <button className="btn-icon" onClick={() => setPanelBoth('collection')}>图鉴</button>
           <button className="btn-icon" onClick={() => setPanelBoth('water')}>水质</button>
-          <span className="dock-divider" />
-          <button className={isRecording ? 'btn-icon active' : 'btn-icon'} onClick={toggleRecord}>
+          <span className="dock-divider dock-pc-divider" />
+          <button className={isRecording ? 'btn-icon pc-only active' : 'btn-icon pc-only'} onClick={toggleRecord}>
             {isRecording ? `${recordSeconds}s` : '录制'}
           </button>
-          <button className="btn-icon" onClick={() => { track('enter_fullscreen'); toggleFullscreen(); }}>全屏</button>
+          <button className="btn-icon pc-only" onClick={() => { track('enter_fullscreen'); toggleFullscreen(); }}>全屏</button>
         </div>
       )}
       {isFullscreen && (

@@ -225,6 +225,9 @@ h1, h2, h3 { font-family: var(--font-kai); font-weight: 600; letter-spacing: 0.0
    注意保留 left:50% + translateX(-50%) 的居中方式——入场动画 keyframes 里带这个位移，
    改成 left/right 定位会被动画的 fill 状态覆盖回去 */
 @media (max-width: 600px) {
+  /* 录制/全屏是 PC 专属：手机不支持 Fullscreen API，Canvas 录制也无实际用途。
+     隐藏这两个按钮后只剩 6 个核心动作，每个都能分到足够宽度，不必挤成一行小字 */
+  .dock .pc-only, .dock .dock-pc-divider { display: none; }
   .dock {
     width: calc(100% - 16px);
     max-width: calc(100% - 16px);

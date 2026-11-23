@@ -40,24 +40,87 @@ export default function LandingPage() {
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return undefined;
+    const el = video; // 闭包内固定非空引用，避免 TS 认为 ref.current 可能变 null
     // iOS/Chrome 的自动播放前提是静音，属性不一定生效，这里再设一次
-    video.muted = true;
+    el.muted = true;
 
     if (reduceMotion) {
       setResting(true);
       return undefined;
     }
 
-    const play = (): void => {
-      video.play().catch(() => setResting(true));
-    };
-    if (video.readyState >= 3) play();
-    else video.addEventListener('canplay', play, { once: true });
+    let disposed = false;
+    let started = false;   // 视频是否真正开播过
+    let unlocked = false;  // 是否已拿到用户手势
+    let fallbackId = 0;
 
-    const fallback = window.setTimeout(() => setResting(true), INTRO_FALLBACK_MS);
+    function unbindUnlock(): void {
+      (['pointerdown', 'touchstart', 'click'] as const).forEach((e) =>
+        window.removeEventListener(e, onUserGesture, true));
+    }
+
+    // 用户首次交互：浏览器自动播放限制已解除，重试播放
+    function onUserGesture(): void {
+      if (disposed || unlocked) return;
+      unlocked = true;
+      unbindUnlock();
+      el.play().catch(() => {
+        // 用户手势后仍失败（加载问题等）才落静帧兜底
+        if (!disposed) setResting(true);
+      });
+    }
+
+    function bindUnlock(): void {
+      if (unlocked) return;
+      (['pointerdown', 'touchstart', 'click'] as const).forEach((e) =>
+        window.addEventListener(e, onUserGesture, { capture: true, passive: true }));
+    }
+
+    // 视频真正开播：撤销兜底计时，收起可能已显示的静帧 UI
+    function onPlaying(): void {
+      started = true;
+      window.clearTimeout(fallbackId);
+      if (!disposed) {
+        setVideoReady(true);
+        setResting(false);
+      }
+    }
+
+    function attemptPlay(): void {
+      el.play().catch((err: unknown) => {
+        if (disposed) return;
+        // 用 name 判断而非 instanceof：DOMException 跨 realm/某些 WebView 下 instanceof 不可靠
+        const name = (err as { name?: string } | null)?.name;
+        if (name === 'NotAllowedError') {
+          // 移动端首次进入没有用户手势，play() 被自动播放策略拦下。
+          // 切主题之所以能播，正因为那一下点击解除了限制——这里等任意交互补播，
+          // 而不是立刻 setResting(true) 永久停在静帧。
+          bindUnlock();
+        } else {
+          setResting(true);
+        }
+      });
+    }
+
+    video.addEventListener('playing', onPlaying);
+    // 缓存命中时 canplay 可能在 React 绑定 onCanPlay 前就触发，
+    // 那样 videoReady 永远为 false、视频停在 opacity:0，只看见 poster 静帧
+    if (video.readyState >= 3) setVideoReady(true);
+
+    // 兜底：始终保证入口一定出现；视频真开播后由 onPlaying 撤销
+    fallbackId = window.setTimeout(() => {
+      if (!disposed && !started) setResting(true);
+    }, INTRO_FALLBACK_MS);
+
+    if (video.readyState >= 3) attemptPlay();
+    else video.addEventListener('canplay', attemptPlay, { once: true });
+
     return () => {
-      window.clearTimeout(fallback);
-      video.removeEventListener('canplay', play);
+      disposed = true;
+      window.clearTimeout(fallbackId);
+      unbindUnlock();
+      video.removeEventListener('canplay', attemptPlay);
+      video.removeEventListener('playing', onPlaying);
     };
   }, [reduceMotion, theme]);
 
